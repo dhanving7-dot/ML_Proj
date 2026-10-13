@@ -1,0 +1,78 @@
+schema: '2.0'
+stages:
+  validate:
+    cmd: python -m scripts.validate_data
+    deps:
+    - path: ../data/raw/placement_50k.csv
+      hash: md5
+      md5: 14fce27e6e7cd11f136d6ebd153f75a6
+      size: 6811359
+    - path: ml/contract.py
+      hash: md5
+      md5: 7c903118377fbd7b4bd127ea3b5487d2
+      size: 6987
+    - path: ml/data.py
+      hash: md5
+      md5: 36d5ed3271e3bb0cdd393630fbb4ffe6
+      size: 13804
+    - path: scripts/validate_data.py
+      hash: md5
+      md5: 217ae2492ed3de9f38bc61982ec24578
+      size: 1144
+    outs:
+    - path: ../reports/data_validation.json
+      hash: md5
+      md5: 463bdd34adb732cb80a59a9d6d596c8d
+      size: 3851
+  train:
+    cmd: python -m scripts.train --trigger dvc
+    deps:
+    - path: ../data/raw/placement_50k.csv
+      hash: md5
+      md5: 14fce27e6e7cd11f136d6ebd153f75a6
+      size: 6811359
+    - path: ../reports/data_validation.json
+      hash: md5
+      md5: 463bdd34adb732cb80a59a9d6d596c8d
+      size: 3851
+    - path: app/services/training_service.py
+      hash: md5
+      md5: 06a68585b42ee5b7091643a29df071b2
+      size: 16342
+    - path: ml
+      hash: md5
+      md5: aabcd3c512dbaf7919fe5e02cb754a20.dir
+      size: 392492
+      nfiles: 34
+    - path: scripts/train.py
+      hash: md5
+      md5: 32641b0ff7de5593b6a70be9ae57fc0b
+      size: 4015
+    params:
+      ../params.yaml:
+        train:
+          candidates:
+          - logistic_regression
+          - random_forest
+          - hist_gradient_boosting
+          - xgboost
+          - lightgbm
+          feature_set: full
+          engineered_features: true
+          cv_folds: 5
+          selection_metric: roc_auc
+          calibration: none
+          threshold_strategy: f1
+          seed: 42
+          validation_size: 0.15
+          test_size: 0.15
+          min_validation_roc_auc: 0.75
+    outs:
+    - path: ../reports/metrics.json
+      hash: md5
+      md5: 7202eb1d4f7a90460cba5f35ce8db376
+      size: 847
+    - path: ../reports/training_run.json
+      hash: md5
+      md5: a0e0fc928acafe6df8d33d9c719ed397
+      size: 6076

@@ -1,0 +1,121 @@
+"""FastAPI application: wiring, middleware and error handling.
+
+Run with:  uvicorn app.main:app --reload   (from the backend/ directory)
+Docs:      http://127.0.0.1:8000/docs
+"""
+from __future__ import annotations
+
+import logging
+import time
+import uuid
+from contextlib import asynccontextmanager
+from typing import Any
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
+
+from . import API_VERSION, db
+from .config import get_settings
+from .errors import AppError
+from .orm import RequestLog
+from .routers import observability, predictions, registry, system
+from .services.dataset_service import ensure_default_dataset
+from .services.events import record_event
+from .services.model_service import model_service
+
+log = logging.getLogger("placementpredict")
+
+UNLOGGED_PREFIXES = ("/api/health", "/docs", "/redoc", "/openapi.json")
+
+
+def startup() -> None:
+    settings = get_settings()
+    db.configure(settings.resolved_database_url)
+    db.init_db()
+    with db.session_scope() as s:
+        ensure_default_dataset(s, settings)
+    try:
+        with db.session_scope() as s:
+            model_service.load_active(s)
+    except Exception:  # keep serving health/docs; /predict returns 503 until a valid model exists
+        log.exception("Active model could not be loaded")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):  # type: ignore[no-untyped-def]
+    await run_in_threadpool(startup)
+    yield
+
+
+app = FastAPI(
+    title="PlacementPredict API",
+    version=API_VERSION,
+    description=(
+        "Student placement prediction with a leakage-safe ML pipeline, model registry, monitoring, "
+        "retraining and an M2-M6 machine-learning laboratory. Predictions are statistical estimates, not guarantees."
+    ),
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_settings().cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
+
+
+def _write_request_log(method: str, path: str, status: int, latency: float) -> None:
+    try:
+        with db.session_scope() as s:
+            s.add(RequestLog(method=method, path=path[:200], status_code=status, latency_ms=round(latency, 3)))
+    except Exception:
+        log.exception("Failed to write request log")
+
+
+@app.middleware("http")
+async def request_logging(request: Request, call_next):  # type: ignore[no-untyped-def]
+    start = time.perf_counter()
+    response = await call_next(request)
+    path = request.url.path
+    if request.method != "OPTIONS" and path.startswith("/api") and not path.startswith(UNLOGGED_PREFIXES):
+        latency = (time.perf_counter() - start) * 1000
+        response.headers["X-Process-Time-Ms"] = f"{latency:.2f}"
+        await run_in_threadpool(_write_request_log, request.method, path, response.status_code, latency)
+    return response
+
+
+@app.exception_handler(AppError)
+async def app_error_handler(_: Request, exc: AppError) -> JSONResponse:
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+def _record_error(error_id: str, path: str, exc: Exception) -> None:
+    try:
+        with db.session_scope() as s:
+            record_event(s, "server_error", "critical", f"Unhandled {type(exc).__name__} on {path}", {"error_id": error_id})
+    except Exception:
+        pass
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    error_id = uuid.uuid4().hex[:12]
+    log.exception("Unhandled error %s on %s", error_id, request.url.path)
+    await run_in_threadpool(_record_error, error_id, request.url.path, exc)
+    # Never expose stack traces or filesystem paths to clients.
+    return JSONResponse(status_code=500, content={"detail": "Internal server error", "error_id": error_id})
+
+
+@app.get("/", include_in_schema=False)
+def root() -> dict[str, Any]:
+    return {"name": "PlacementPredict API", "version": API_VERSION, "docs": "/docs"}
+
+
+app.include_router(system.router)
+app.include_router(predictions.router)
+app.include_router(registry.router)
+app.include_router(observability.router)

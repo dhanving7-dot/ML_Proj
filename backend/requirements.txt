@@ -1,0 +1,31 @@
+# Core API + ML (required)
+fastapi==0.143.0
+uvicorn[standard]==0.54.0
+pydantic==2.14.1
+pydantic-settings==2.15.0
+SQLAlchemy==2.1.4
+python-multipart==0.0.32
+scikit-learn==1.9.1
+scipy==1.18.1
+pandas==3.0.6
+numpy==2.5.4
+joblib==1.6.0
+PyYAML==6.0.3
+httpx==0.28.1
+
+# MLOps
+mlflow==3.17.1
+dvc==3.67.1
+
+# Optional libraries used when installed (the app degrades gracefully without them)
+xgboost==3.4.1
+lightgbm==4.7.0
+shap==0.53.0
+optuna==5.0.0
+umap-learn==0.5.12
+onnx==1.23.2
+skl2onnx==1.20.0
+onnxruntime==1.31.0
+
+# Tests
+pytest==9.1.1

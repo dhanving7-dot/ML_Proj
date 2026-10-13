@@ -1,0 +1,35 @@
+# Reproducible ML pipeline. Run from the project root with the virtual environment activated:
+#   dvc repro          # re-runs only the stages whose data, code or params changed
+#   dvc metrics show   # held-out metrics of the last training run
+#   dvc dag            # pipeline graph
+stages:
+  validate:
+    wdir: backend
+    cmd: python -m scripts.validate_data
+    deps:
+      - ../data/raw/placement_50k.csv
+      - ml/contract.py
+      - ml/data.py
+      - scripts/validate_data.py
+    outs:
+      - ../reports/data_validation.json:
+          cache: false
+
+  train:
+    wdir: backend
+    cmd: python -m scripts.train --trigger dvc
+    deps:
+      - ../data/raw/placement_50k.csv
+      - ../reports/data_validation.json
+      - ml
+      - scripts/train.py
+      - app/services/training_service.py
+    params:
+      - ../params.yaml:
+          - train
+    metrics:
+      - ../reports/metrics.json:
+          cache: false
+    outs:
+      - ../reports/training_run.json:
+          cache: false

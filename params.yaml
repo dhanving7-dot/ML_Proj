@@ -1,0 +1,13 @@
+# Training configuration (read by backend/scripts/train.py and tracked by DVC).
+train:
+  candidates: [logistic_regression, random_forest, hist_gradient_boosting, xgboost, lightgbm]
+  feature_set: full            # full | pre_final_year (point-in-time safe if predicting before semesters 7-8)
+  engineered_features: true    # SGPA trend + volatility
+  cv_folds: 5
+  selection_metric: roc_auc
+  calibration: none            # none | sigmoid | isotonic (validation ECE was 0.008 without calibration)
+  threshold_strategy: f1       # tuned on the validation split only
+  seed: 42
+  validation_size: 0.15
+  test_size: 0.15
+  min_validation_roc_auc: 0.75

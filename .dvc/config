@@ -1,0 +1,3 @@
+[core]
+    no_scm = false
+    analytics = false

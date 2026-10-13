@@ -1,0 +1,42 @@
+{
+  "status": "succeeded",
+  "decision": "promoted",
+  "model_type": "xgboost",
+  "version": "v2",
+  "validation": {
+    "accuracy": 0.9263,
+    "precision": 0.9312,
+    "recall": 0.9586,
+    "f1": 0.9447,
+    "roc_auc": 0.981,
+    "average_precision": 0.9901,
+    "log_loss": 0.165,
+    "brier": 0.0524,
+    "threshold": 0.45,
+    "confusion_matrix": {
+      "tn": 2223,
+      "fp": 349,
+      "fn": 204,
+      "tp": 4725
+    },
+    "support": 7501
+  },
+  "test": {
+    "accuracy": 0.9208,
+    "precision": 0.9209,
+    "recall": 0.9621,
+    "f1": 0.941,
+    "roc_auc": 0.9802,
+    "average_precision": 0.9896,
+    "log_loss": 0.1679,
+    "brier": 0.0537,
+    "threshold": 0.45,
+    "confusion_matrix": {
+      "tn": 2165,
+      "fp": 407,
+      "fn": 187,
+      "tp": 4741
+    },
+    "support": 7500
+  }
+}

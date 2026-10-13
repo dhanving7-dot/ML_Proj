@@ -1,0 +1,138 @@
+{
+  "status": "passed_with_warnings",
+  "n_rows": 50000,
+  "n_columns": 32,
+  "checks": [
+    {
+      "name": "required_columns",
+      "status": "pass",
+      "message": "All contract columns are present.",
+      "details": {
+        "missing": []
+      }
+    },
+    {
+      "name": "unexpected_columns",
+      "status": "pass",
+      "message": "No unexpected columns.",
+      "details": {
+        "columns": []
+      }
+    },
+    {
+      "name": "excluded_columns",
+      "status": "pass",
+      "message": "Columns present but excluded from model inputs (leakage / identifier / semantics).",
+      "details": {
+        "columns": {
+          "StudentID": "Row identifier with no predictive meaning.",
+          "Salary Package": "Post-outcome leakage: a salary only exists after a student is placed.",
+          "IsAnomaly": "Dataset-generation annotation that is not available at prediction time.",
+          "CGPA_Tier": "Derived duplicate of CGPA (bins <6.5 / 6.5-8.0 / >=8.0) that disagrees with CGPA on a minority of rows; its definition is undocumented, so it cannot be reproduced reliably at serving time and CGPA already carries the signal."
+        }
+      }
+    },
+    {
+      "name": "row_count",
+      "status": "pass",
+      "message": "50000 rows (minimum 200).",
+      "details": {
+        "rows": 50000
+      }
+    },
+    {
+      "name": "target_values",
+      "status": "pass",
+      "message": "Target is binary {0, 1}.",
+      "details": {
+        "invalid_rows": 0
+      }
+    },
+    {
+      "name": "class_balance",
+      "status": "pass",
+      "message": "Positive (placed) rate 0.657.",
+      "details": {
+        "positive_rate": 0.65712
+      }
+    },
+    {
+      "name": "numeric_types",
+      "status": "pass",
+      "message": "Numeric columns parse.",
+      "details": {
+        "columns": {}
+      }
+    },
+    {
+      "name": "value_ranges",
+      "status": "pass",
+      "message": "All values within ranges.",
+      "details": {
+        "columns": {}
+      }
+    },
+    {
+      "name": "categorical_domains",
+      "status": "pass",
+      "message": "Categories match.",
+      "details": {
+        "columns": {}
+      }
+    },
+    {
+      "name": "unexpected_nulls",
+      "status": "pass",
+      "message": "No unexpected nulls.",
+      "details": {
+        "columns": {}
+      }
+    },
+    {
+      "name": "expected_missingness",
+      "status": "pass",
+      "message": "Missing values in nullable columns (handled by imputation + missing indicators).",
+      "details": {
+        "columns": {
+          "Workshops": 4488,
+          "AptitudeTestScore": 4029,
+          "SoftSkillsRating": 3526,
+          "CodingTestScore": 2976,
+          "MockInterviewScore": 4957
+        }
+      }
+    },
+    {
+      "name": "duplicates",
+      "status": "pass",
+      "message": "0 duplicate rows, 0 duplicate IDs.",
+      "details": {
+        "duplicate_rows": 0,
+        "duplicate_ids": 0
+      }
+    },
+    {
+      "name": "cgpa_consistency",
+      "status": "warn",
+      "message": "1502 rows where CGPA differs from the mean SGPA by more than 1.0.",
+      "details": {
+        "inconsistent_rows": 1502,
+        "median_gap": 0.06874999999999964
+      }
+    },
+    {
+      "name": "cgpa_tier_consistency",
+      "status": "warn",
+      "message": "CGPA_Tier matches the rule CGPA<6.5 Low / <8.0 Mid / else High for 97.3% of rows (1369 rows disagree). The column is excluded from model inputs.",
+      "details": {
+        "agreement": 0.9726,
+        "mismatched_rows": 1369,
+        "rule": "<6.5 Low, <8.0 Mid, else High"
+      }
+    }
+  ],
+  "dataset": {
+    "name": "placement_50k.csv",
+    "sha256": "acfe505eebec6d084522acb83194bbe08a7c8a3068bc7728399dc1e73b7daff3"
+  }
+}
