@@ -3,7 +3,7 @@ services:
     name: fraudguard
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter # 512 MB free instances are likely to run out of memory when the dataset is loaded
+    plan: free # 512 MB RAM; use starter if pages that load the full dataset restart the instance
     healthCheckPath: /api/health
     envVars:
       - key: FG_MLFLOW_ENABLED
