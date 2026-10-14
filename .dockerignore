@@ -1,0 +1,17 @@
+.git
+.venv
+.dvc/cache
+**/__pycache__
+**/.pytest_cache
+frontend/node_modules
+frontend/dist
+frontend/browser-check
+frontend/e2e-check
+frontend/lab-check
+data
+artifacts
+mlruns
+mlflow.db
+backend/*.db*
+reports
+ML_Project.ipynb

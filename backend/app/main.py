@@ -6,9 +6,11 @@ Docs:      http://127.0.0.1:8000/docs
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -120,12 +122,30 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
     return JSONResponse(status_code=500, content={"detail": "Internal server error", "error_id": error_id})
 
 
-@app.get("/", include_in_schema=False)
-def root() -> dict[str, Any]:
-    return {"name": "FraudGuard API", "version": API_VERSION, "docs": "/docs"}
-
-
 app.include_router(system.router)
 app.include_router(predictions.router)
 app.include_router(registry.router)
 app.include_router(observability.router)
+
+_STATIC = os.environ.get("FG_STATIC_DIR")
+if _STATIC and (Path(_STATIC) / "index.html").is_file():
+    # Single-origin deployment: serve the built React app; unknown non-API paths fall back to index.html.
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+
+    _STATIC_ROOT = Path(_STATIC).resolve()
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def spa(path: str) -> FileResponse:
+        if path.startswith("api/"):
+            raise HTTPException(status_code=404)
+        candidate = (_STATIC_ROOT / path).resolve()
+        if path and candidate.is_file() and _STATIC_ROOT in candidate.parents:
+            return FileResponse(candidate)
+        return FileResponse(_STATIC_ROOT / "index.html")
+
+else:
+
+    @app.get("/", include_in_schema=False)
+    def root() -> dict[str, Any]:
+        return {"name": "FraudGuard API", "version": API_VERSION, "docs": "/docs"}
