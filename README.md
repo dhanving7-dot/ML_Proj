@@ -1,4 +1,20 @@
-# PlacementPredict
+# FraudGuard: credit-card fraud detection
+
+**Live demo: https://ml-proj-1lmz.onrender.com/** (Render free instance; the first request after it has been idle takes about a minute)
+
+FraudGuard detects fraud in the European credit-card transactions dataset (`creditcard.csv`, 284,807 transactions, 492 fraud) with a class-weighted **Logistic Regression**, an unsupervised **Isolation Forest** and a validation-tuned **hybrid risk score** that returns `LOW_RISK`, `REVIEW` or `HIGH_RISK`. It includes a leakage-safe training pipeline, a FastAPI service with a model registry, monitoring and controlled retraining, an M2–M6 machine-learning laboratory, and a React frontend.
+
+| | |
+|---|---|
+| Deployment | One Docker service on Render (`Dockerfile`, `render.yaml`): FastAPI serves the API and the built frontend; the dataset is downloaded and md5-verified, and the model is trained during the build |
+| Run locally | `cd backend; ..\.venv\Scripts\python -m scripts.train` then `..\.venv\Scripts\python -m uvicorn app.main:app --port 8000`; in `frontend`: `npm run build; npm run preview` (http://localhost:4173) |
+| Migration notes | `docs/MIGRATION.md` (audit, decisions, checklist) |
+
+> **Note:** the sections below still describe the previous PlacementPredict version and have not been rewritten yet. The free Render instance has 512 MB of memory; pages that load the full dataset (replaying a test row, the evaluation explorer, dataset statistics) may restart it.
+
+---
+
+# Previous version: PlacementPredict
 
 PlacementPredict is a student placement prediction platform. It consists of a leakage-safe ML pipeline, a FastAPI service with a model registry, monitoring and controlled retraining, an M2–M6 machine-learning laboratory with 27 experiments, and a React frontend.
 
