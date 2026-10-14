@@ -7,7 +7,7 @@ stages:
     wdir: backend
     cmd: python -m scripts.validate_data
     deps:
-      - ../data/raw/placement_50k.csv
+      - ../data/raw/creditcard.csv
       - ml/contract.py
       - ml/data.py
       - scripts/validate_data.py
@@ -19,7 +19,7 @@ stages:
     wdir: backend
     cmd: python -m scripts.train --trigger dvc
     deps:
-      - ../data/raw/placement_50k.csv
+      - ../data/raw/creditcard.csv
       - ../reports/data_validation.json
       - ml
       - scripts/train.py

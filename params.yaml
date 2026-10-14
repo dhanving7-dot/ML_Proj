@@ -1,13 +1,32 @@
 # Training configuration (read by backend/scripts/train.py and tracked by DVC).
+# Every key maps to ml.training.TrainConfig; see docs/MIGRATION.md for the reasoning.
 train:
-  candidates: [logistic_regression, random_forest, hist_gradient_boosting, xgboost, lightgbm]
-  feature_set: full            # full | pre_final_year (point-in-time safe if predicting before semesters 7-8)
-  engineered_features: true    # SGPA trend + volatility
-  cv_folds: 5
-  selection_metric: roc_auc
-  calibration: none            # none | sigmoid | isotonic (validation ECE was 0.008 without calibration)
-  threshold_strategy: f1       # tuned on the validation split only
+  # data
   seed: 42
   validation_size: 0.15
   test_size: 0.15
-  min_validation_roc_auc: 0.75
+  drop_duplicates: true          # 1,081 exact duplicates are dropped before splitting (documented)
+  time_encoding: cyclical_hour   # cyclical_hour | raw | none
+  amount_transform: log1p        # log1p | raw
+  # Model A: Logistic Regression
+  lr_imbalance: class_weight     # class_weight | undersample | none (inside each training fold only)
+  lr_undersample_ratio: 20
+  lr_c_grid: [0.01, 0.1, 1.0]    # chosen by stratified CV on the training split (average precision)
+  lr_calibration: prior_correction
+  lr_threshold_strategy: f1
+  cv_folds: 5
+  # Model B: Isolation Forest (fitted without labels)
+  if_n_estimators: 300
+  if_max_samples: 256
+  if_reference: all_train        # all_train | legitimate_train
+  if_flag_rate: 0.01             # anomaly flag = top 1 % of the training reference scores
+  # Hybrid fusion and decisions (tuned on the validation split only)
+  fusion_weight: null            # null = choose w by validation average precision
+  fusion_grid_step: 0.05
+  high_risk_strategy: f1         # f1 | precision_target
+  high_risk_precision_target: 0.8
+  review_recall_target: 0.9
+  max_review_rate: 0.01
+  if_review_percentile: null     # e.g. 0.999 routes the top 0.1 % anomalies to REVIEW
+  # promotion gate
+  min_validation_average_precision: 0.3

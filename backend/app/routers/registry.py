@@ -1,4 +1,4 @@
-"""Model registry, training jobs and datasets."""
+"""Model registry, training jobs, datasets and the evaluation laboratory."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,18 +8,18 @@ from fastapi import APIRouter, Depends, File, Query, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ml.registry import read_metadata
+from ml.registry import ArtifactIntegrityError, read_metadata
 from ml.training import TrainConfig
 
 from ..config import Settings, get_settings
 from ..db import get_session
 from ..errors import InvalidInput, NotFound
 from ..orm import Dataset, ModelVersion, TrainingRun
-from ..schemas import TrainingJobRequest
-from ..services import dataset_service, training_service
+from ..schemas import ExploreRequest, TrainingJobRequest
+from ..services import dataset_service, evaluation_service, training_service
 from ..services.model_service import model_service
 
-router = APIRouter(prefix="/api", tags=["models", "training", "datasets"])
+router = APIRouter(prefix="/api", tags=["models", "training", "datasets", "evaluation"])
 
 
 def _model_dict(mv: ModelVersion) -> dict[str, Any]:
@@ -31,6 +31,7 @@ def _model_dict(mv: ModelVersion) -> dict[str, Any]:
         "activated_at": mv.activated_at,
         "feature_set": mv.feature_set,
         "threshold": mv.threshold,
+        "policy": mv.policy,
         "sha256": mv.sha256,
         "size_bytes": mv.size_bytes,
         "dataset_id": mv.dataset_id,
@@ -46,7 +47,7 @@ def list_models(session: Session = Depends(get_session, scope="function")) -> di
     return {"active_version": am.version if am else None, "items": [_model_dict(m) for m in items]}
 
 
-@router.get("/models/{version}", summary="Model details: metadata, metrics, curves, importances")
+@router.get("/models/{version}", summary="Model details: metadata, metrics, curves, coefficients")
 def model_detail(version: str, session: Session = Depends(get_session, scope="function")) -> dict[str, Any]:
     mv = session.scalars(select(ModelVersion).where(ModelVersion.version == version)).first()
     if mv is None:
@@ -63,17 +64,33 @@ def model_detail(version: str, session: Session = Depends(get_session, scope="fu
     }
 
 
-@router.post("/models/{version}/activate", summary="Activate (roll back to) a registered version")
+@router.get("/models/{version}/integrity", summary="Re-hash the artifact and compare it with the registry record")
+def model_integrity(version: str, session: Session = Depends(get_session, scope="function")) -> dict[str, Any]:
+    from ml.data import file_sha256
+
+    mv = session.scalars(select(ModelVersion).where(ModelVersion.version == version)).first()
+    if mv is None:
+        raise NotFound(f"Model version {version} not found")
+    path = Path(mv.artifact_path)
+    if not path.exists():
+        return {"version": version, "exists": False, "matches": False, "expected_sha256": mv.sha256, "actual_sha256": None}
+    actual = file_sha256(path)
+    return {"version": version, "exists": True, "matches": actual == mv.sha256, "expected_sha256": mv.sha256, "actual_sha256": actual, "size_bytes": path.stat().st_size}
+
+
+@router.post("/models/{version}/activate", summary="Promote a candidate or roll back to a registered version")
 def activate(version: str, session: Session = Depends(get_session, scope="function")) -> dict[str, Any]:
-    mv = training_service.activate_version(session, version)
+    try:
+        mv = training_service.activate_version(session, version)
+    except ArtifactIntegrityError:
+        raise InvalidInput(f"Artifact for {version} failed its integrity check; it was not activated") from None
     return _model_dict(mv)
 
 
 @router.post("/training/jobs", status_code=202, summary="Start a controlled retraining job")
 def start_training(body: TrainingJobRequest, settings: Settings = Depends(get_settings)) -> dict[str, Any]:
-    cfg_in = body.config.model_dump(exclude_none=True)
     try:
-        config = TrainConfig.from_dict(cfg_in)
+        config = TrainConfig.from_dict(body.config.model_dump())
     except ValueError as exc:
         raise InvalidInput(str(exc)) from None
     job_id = training_service.start_background_job(settings, config, body.dataset_id, trigger="api")
@@ -115,15 +132,37 @@ def dataset_detail(dataset_id: int, session: Session = Depends(get_session, scop
     return {**dataset_service.dataset_dict(ds), "validation_report": ds.validation_report}
 
 
-@router.get("/datasets/{dataset_id}/stats", summary="Column statistics incl. skewness and kurtosis")
+@router.get("/datasets/{dataset_id}/stats", summary="Column statistics incl. skewness, kurtosis and per-class means")
 def dataset_stats(dataset_id: int, session: Session = Depends(get_session, scope="function")) -> dict[str, Any]:
     ds = dataset_service.get_dataset(session, dataset_id)
     return dataset_service.dataset_stats(ds)
 
 
-@router.get("/datasets/{dataset_id}/sample", summary="Real rows from the held-out test split")
-def dataset_sample(dataset_id: int, n: int = Query(1, ge=1, le=50), seed: int | None = Query(None, ge=0), session: Session = Depends(get_session, scope="function")) -> dict[str, Any]:
+@router.get("/datasets/{dataset_id}/sample", summary="Real rows from the held-out test split (replay data)")
+def dataset_sample(
+    dataset_id: int,
+    n: int = Query(1, ge=1, le=50),
+    seed: int | None = Query(None, ge=0),
+    label: int | None = Query(None, ge=0, le=1, description="1 = only fraud rows, 0 = only legitimate rows"),
+    session: Session = Depends(get_session, scope="function"),
+) -> dict[str, Any]:
     ds = dataset_service.get_dataset(session, dataset_id)
     if ds.validation_status == "failed":
         raise InvalidInput("This dataset failed validation")
-    return {"dataset_id": ds.id, "split": "test", "items": dataset_service.sample_rows(ds, n, seed)}
+    am = model_service.active
+    return {
+        "dataset_id": ds.id,
+        "split": "test",
+        "note": "Replayed rows from the held-out test split of the public dataset (offline data, not live traffic).",
+        "items": dataset_service.sample_rows(ds, n, seed, label, am.metadata if am else None),
+    }
+
+
+@router.get("/evaluation/summary", summary="Stored evaluation of the active model (validation + one-time test)")
+def evaluation_summary() -> dict[str, Any]:
+    return evaluation_service.summary(model_service.require())
+
+
+@router.post("/evaluation/explore", summary="Evaluate a what-if decision policy on the validation split")
+def evaluation_explore(body: ExploreRequest, session: Session = Depends(get_session, scope="function")) -> dict[str, Any]:
+    return evaluation_service.explore(session, body.model_dump())

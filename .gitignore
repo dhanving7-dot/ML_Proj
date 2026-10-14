@@ -6,13 +6,15 @@ __pycache__/
 
 # Runtime state (recreated on start-up / training)
 backend/placementpredict.db*
+backend/fraudguard.db*
 mlflow.db
 mlruns/
-artifacts/models/
+artifacts/
 data/uploads/
 
-# Large data is versioned by DVC (see data/raw/placement_50k.csv.dvc)
+# Large data is versioned by DVC (see data/raw/*.dvc)
 /data/raw/placement_50k.csv
+/data/raw/creditcard.csv
 
 # Frontend
 frontend/node_modules/

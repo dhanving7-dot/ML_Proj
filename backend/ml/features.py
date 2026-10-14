@@ -1,9 +1,17 @@
 """Shared feature pipeline: type coercion, feature engineering and preprocessing.
 
-Training and serving both call :func:`coerce_features` and use the fitted
-``Pipeline`` stored in the model artifact, so imputation values, scaling
-parameters and encoder vocabularies are learned once (on training data only)
-and reused unchanged in production.
+Training and serving both call :func:`coerce_features` and use the fitted preprocessing
+``Pipeline`` stored in the model artifact, so scaling parameters are learned once (on the
+training split only) and reused unchanged in production.
+
+Engineered features
+-------------------
+* ``amount_log`` = ``log1p(Amount)``: ``Amount`` is strongly right-skewed (median 22, max 25,691).
+* ``hour_sin`` / ``hour_cos``: ``Time`` counts seconds since the first transaction in the dataset
+  and only ever increases, so new transactions would fall outside the training range. It is
+  therefore encoded as a position on a 24-hour cycle, ``h = (Time mod 86400) / 3600``. The clock
+  time of ``Time = 0`` is not published, so ``h`` is "hours since the first transaction's clock
+  time", not wall-clock hour.
 """
 from __future__ import annotations
 
@@ -12,147 +20,119 @@ from typing import Any, Iterable, Mapping
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
+from sklearn.preprocessing import StandardScaler
 
 from . import contract as C
 
-ENGINEERED_FEATURES = ("sgpa_trend", "sgpa_volatility")
+SECONDS_PER_DAY = 86_400.0
+TIME_ENCODINGS = ("cyclical_hour", "raw", "none")
+AMOUNT_TRANSFORMS = ("log1p", "raw")
 
 
 def coerce_features(data: pd.DataFrame | Iterable[Mapping[str, Any]], names: Iterable[str] = C.FEATURE_NAMES) -> pd.DataFrame:
-    """Return a frame with exactly the contract columns, in contract order, with contract dtypes.
+    """Return a float frame with exactly the contract columns, in contract order.
 
-    Numeric values outside the contract range or unparsable become NaN; missing categoricals
-    become ``np.nan`` (which ``SimpleImputer`` recognises, unlike ``None``).
+    Unparsable, non-finite and out-of-range values become NaN (the training path drops such
+    rows and the API rejects them before this point).
     """
     df = data if isinstance(data, pd.DataFrame) else pd.DataFrame(list(data))
-    names = list(names)
     out: dict[str, pd.Series] = {}
     for name in names:
         f = C.FEATURES_BY_NAME[name]
         raw = df[name] if name in df.columns else pd.Series([np.nan] * len(df), index=df.index)
-        if isinstance(f, C.NumericFeature):
-            col = pd.to_numeric(raw, errors="coerce").astype(float)
-            out[name] = col.where((col >= f.minimum) & (col <= f.maximum))
-        else:
-            col = raw.astype(object)
-            out[name] = col.where(col.notna(), np.nan)
+        col = pd.to_numeric(raw, errors="coerce").astype(float)
+        ok = np.isfinite(col.to_numpy(dtype=float, na_value=np.nan))
+        if f.minimum is not None:
+            ok &= (col >= f.minimum).to_numpy()
+        if f.maximum is not None:
+            ok &= (col <= f.maximum).to_numpy()
+        out[name] = col.where(ok)
     return pd.DataFrame(out, index=df.index)
 
 
-class AcademicFeatureEngineer(BaseEstimator, TransformerMixin):
-    """Adds engineered academic features derived from per-semester SGPA values.
+def hour_of_cycle(time_s: np.ndarray | pd.Series) -> np.ndarray:
+    return (np.asarray(time_s, dtype=float) % SECONDS_PER_DAY) / 3600.0
 
-    * ``sgpa_trend``: least-squares slope of SGPA across the available semesters.
-    * ``sgpa_volatility``: standard deviation of the semester SGPAs.
 
-    It is stateless (nothing is learned), so it behaves identically in training and serving.
-    """
+class TransactionFeatureEngineer(BaseEstimator, TransformerMixin):
+    """Stateless feature engineering (nothing is learned), so it behaves identically in training and serving."""
 
-    def __init__(self, semesters: tuple[str, ...] = C.SEMESTERS):
-        self.semesters = semesters
+    def __init__(self, time_encoding: str = "cyclical_hour", amount_transform: str = "log1p"):
+        self.time_encoding = time_encoding
+        self.amount_transform = amount_transform
 
-    def fit(self, X: pd.DataFrame, y: Any = None) -> "AcademicFeatureEngineer":
+    def fit(self, X: pd.DataFrame, y: Any = None) -> "TransactionFeatureEngineer":
+        if self.time_encoding not in TIME_ENCODINGS:
+            raise ValueError(f"time_encoding must be one of {TIME_ENCODINGS}")
+        if self.amount_transform not in AMOUNT_TRANSFORMS:
+            raise ValueError(f"amount_transform must be one of {AMOUNT_TRANSFORMS}")
         self.feature_names_in_ = np.asarray(list(X.columns), dtype=object)
         self.n_features_in_ = len(self.feature_names_in_)
         return self
 
+    def output_names(self) -> list[str]:
+        names = list(C.PCA_FEATURES)
+        names.append("amount_log" if self.amount_transform == "log1p" else "Amount")
+        if self.time_encoding == "cyclical_hour":
+            names += ["hour_sin", "hour_cos"]
+        elif self.time_encoding == "raw":
+            names.append("Time")
+        return names
+
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        X = X.copy()
-        sem = [s for s in self.semesters if s in X.columns]
-        values = X[sem].to_numpy(dtype=float)
-        t = np.arange(len(sem), dtype=float)
-        t_c = t - t.mean()
-        mask = ~np.isnan(values)
-        filled = np.where(mask, values, 0.0)
-        counts = mask.sum(axis=1)
-        means = np.divide(filled.sum(axis=1), counts, out=np.full(len(X), np.nan), where=counts > 0)
-        centred = np.where(mask, values - means[:, None], 0.0)
-        denom = (np.where(mask, t_c, 0.0) ** 2).sum(axis=1)
-        slope = np.divide((centred * t_c).sum(axis=1), denom, out=np.full(len(X), np.nan), where=denom > 0)
-        var = np.divide((centred**2).sum(axis=1), counts - 1, out=np.full(len(X), np.nan), where=counts > 1)
-        X["sgpa_trend"] = slope
-        X["sgpa_volatility"] = np.sqrt(var)
-        return X
+        out = pd.DataFrame(index=X.index)
+        for v in C.PCA_FEATURES:
+            out[v] = X[v].astype(float)
+        amount = X["Amount"].astype(float)
+        if self.amount_transform == "log1p":
+            out["amount_log"] = np.log1p(amount)
+        else:
+            out["Amount"] = amount
+        if self.time_encoding == "cyclical_hour":
+            angle = 2 * np.pi * hour_of_cycle(X["Time"]) / 24.0
+            out["hour_sin"] = np.sin(angle)
+            out["hour_cos"] = np.cos(angle)
+        elif self.time_encoding == "raw":
+            out["Time"] = X["Time"].astype(float)
+        return out
 
     def get_feature_names_out(self, input_features: Any = None) -> np.ndarray:
-        return np.asarray([*self.feature_names_in_, *ENGINEERED_FEATURES], dtype=object)
+        return np.asarray(self.output_names(), dtype=object)
 
 
-def build_preprocessor(
-    feature_names: Iterable[str],
-    *,
-    engineered: bool = True,
-    numeric_imputer: str = "median",
-    scaler: str = "standard",
-    add_missing_indicator: bool = True,
-) -> ColumnTransformer:
-    """ColumnTransformer that imputes, scales and encodes the contract features."""
-    numeric, nominal, ordinal = C.split_feature_kinds(list(feature_names))
-    if engineered:
-        numeric = [*numeric, *ENGINEERED_FEATURES]
-    num_steps: list[tuple[str, Any]] = [
-        ("impute", SimpleImputer(strategy=numeric_imputer, add_indicator=add_missing_indicator))
-    ]
+def build_preprocessor(time_encoding: str = "cyclical_hour", amount_transform: str = "log1p", scaler: str = "standard") -> Pipeline:
+    """[feature engineering] -> scaling. Fitted on the training split only."""
+    steps: list[tuple[str, Any]] = [("engineer", TransactionFeatureEngineer(time_encoding, amount_transform))]
     if scaler == "standard":
-        num_steps.append(("scale", StandardScaler()))
+        steps.append(("scale", StandardScaler()))
     elif scaler == "minmax":
         from sklearn.preprocessing import MinMaxScaler
 
-        num_steps.append(("scale", MinMaxScaler()))
-    transformers: list[tuple[str, Any, list[str]]] = [("num", Pipeline(num_steps), numeric)]
-    if nominal:
-        transformers.append(
-            (
-                "nom",
-                Pipeline(
-                    [
-                        ("impute", SimpleImputer(strategy="most_frequent")),
-                        ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-                    ]
-                ),
-                nominal,
-            )
-        )
-    if ordinal:
-        cats = [list(C.FEATURES_BY_NAME[n].categories) for n in ordinal]  # type: ignore[union-attr]
-        transformers.append(
-            (
-                "ord",
-                Pipeline(
-                    [
-                        ("impute", SimpleImputer(strategy="most_frequent")),
-                        (
-                            "ordinal",
-                            OrdinalEncoder(categories=cats, handle_unknown="use_encoded_value", unknown_value=-1),
-                        ),
-                    ]
-                ),
-                ordinal,
-            )
-        )
-    return ColumnTransformer(transformers, remainder="drop", verbose_feature_names_out=False)
-
-
-def build_pipeline(estimator: Any, feature_names: Iterable[str], *, engineered: bool = True, **pre_kwargs: Any) -> Pipeline:
-    """Full model pipeline: [feature engineering] -> preprocessing -> estimator."""
-    feature_names = list(feature_names)
-    steps: list[tuple[str, Any]] = []
-    if engineered:
-        sems = tuple(s for s in C.SEMESTERS if s in feature_names)
-        steps.append(("engineer", AcademicFeatureEngineer(semesters=sems)))
-    steps.append(("preprocess", build_preprocessor(feature_names, engineered=engineered, **pre_kwargs)))
-    steps.append(("model", estimator))
+        steps.append(("scale", MinMaxScaler()))
+    elif scaler != "none":
+        raise ValueError("scaler must be standard, minmax or none")
     return Pipeline(steps)
 
 
-def transformed_feature_names(pipeline: Pipeline) -> list[str]:
-    return [str(n) for n in pipeline.named_steps["preprocess"].get_feature_names_out()]
+def build_pipeline(estimator: Any, *, time_encoding: str = "cyclical_hour", amount_transform: str = "log1p", scaler: str = "standard") -> Pipeline:
+    """Full model pipeline used by the laboratory: preprocessing -> estimator."""
+    pre = build_preprocessor(time_encoding, amount_transform, scaler)
+    return Pipeline([*pre.steps, ("model", estimator)])
 
 
-def transform_features(pipeline: Pipeline, X: pd.DataFrame) -> np.ndarray:
-    """Apply every fitted step except the estimator (the exact vector the model sees)."""
-    return np.asarray(pipeline[:-1].transform(X), dtype=float)
+def transformed_feature_names(preprocessor: Pipeline) -> list[str]:
+    return list(preprocessor.named_steps["engineer"].output_names())
+
+
+def describe_feature(name: str) -> str:
+    """Human-readable description of a transformed feature. PCA components are never given a meaning."""
+    if name in C.PCA_FEATURES:
+        return f"{name} (anonymised PCA component)"
+    return {
+        "amount_log": "log(1 + Amount)",
+        "Amount": "Amount",
+        "hour_sin": "hour-of-cycle (sine)",
+        "hour_cos": "hour-of-cycle (cosine)",
+        "Time": "Time (raw seconds)",
+    }.get(name, name)

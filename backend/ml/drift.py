@@ -1,7 +1,7 @@
 """Drift statistics from the handout: PSI, KL divergence, summary-statistic shifts, skewness/kurtosis.
 
-Reference profiles are computed from the *training* split at training time and stored in the
-model metadata, so serving-time drift is always measured against what the model learned from.
+Reference profiles are computed at training time and stored in the model metadata: input features
+from the *training* split, output scores from the *validation* split (out-of-sample, like serving).
 """
 from __future__ import annotations
 
@@ -10,8 +10,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from scipy import stats as sstats
-
-from . import contract as C
 
 EPS = 1e-4
 PSI_STABLE = 0.10
@@ -74,17 +72,17 @@ def categorical_reference(values: pd.Series) -> dict[str, Any]:
     return {"kind": "categorical", "proportions": {str(k): round(float(p), 6) for k, p in vc.items()}, "n": int(len(values))}
 
 
-def build_reference_profile(train_X: pd.DataFrame, val_proba: np.ndarray | None = None) -> dict[str, Any]:
+def build_reference_profile(train_X: pd.DataFrame, scores: dict[str, np.ndarray] | None = None) -> dict[str, Any]:
+    """Reference distributions of every model input (training split) and of each output score (validation split)."""
     features: dict[str, Any] = {}
     for name in train_X.columns:
-        f = C.FEATURES_BY_NAME.get(name)
-        if isinstance(f, C.NumericFeature):
+        if pd.api.types.is_numeric_dtype(train_X[name]):
             features[name] = numeric_reference(train_X[name])
         else:
             features[name] = categorical_reference(train_X[name])
     profile: dict[str, Any] = {"features": features}
-    if val_proba is not None:
-        profile["prediction"] = numeric_reference(pd.Series(val_proba))
+    if scores:
+        profile["scores"] = {k: numeric_reference(pd.Series(v)) for k, v in scores.items()}
     return profile
 
 
@@ -105,7 +103,7 @@ def compare_numeric(ref: dict[str, Any], values: pd.Series) -> dict[str, Any]:
         "status": psi_status(p),
         "n": int(len(v)),
         "bins": [
-            {"bin": f"{edges[i]:.2f}-{edges[i + 1]:.2f}", "expected": round(float(expected[i]), 4), "actual": round(float(actual[i]), 4)}
+            {"bin": f"{edges[i]:.4g} to {edges[i + 1]:.4g}", "expected": round(float(expected[i]), 4), "actual": round(float(actual[i]), 4)}
             for i in range(len(expected))
         ],
         "summary": {
@@ -142,7 +140,7 @@ def compare_categorical(ref: dict[str, Any], values: pd.Series) -> dict[str, Any
     }
 
 
-def drift_report(reference: dict[str, Any], current_X: pd.DataFrame, current_proba: np.ndarray | None = None) -> dict[str, Any]:
+def drift_report(reference: dict[str, Any], current_X: pd.DataFrame, current_scores: dict[str, np.ndarray] | None = None) -> dict[str, Any]:
     features = {}
     for name, ref in reference["features"].items():
         if name not in current_X.columns:
@@ -151,8 +149,10 @@ def drift_report(reference: dict[str, Any], current_X: pd.DataFrame, current_pro
             compare_numeric(ref, current_X[name]) if ref["kind"] == "numeric" else compare_categorical(ref, current_X[name])
         )
     out: dict[str, Any] = {"features": features}
-    if current_proba is not None and "prediction" in reference:
-        out["prediction"] = compare_numeric(reference["prediction"], pd.Series(current_proba))
+    if current_scores:
+        out["scores"] = {
+            k: compare_numeric(reference["scores"][k], pd.Series(v)) for k, v in current_scores.items() if k in reference.get("scores", {})
+        }
     flagged = [n for n, r in features.items() if r["status"] in ("investigate", "significant_shift")]
     out["flagged_features"] = flagged
     out["thresholds"] = {"stable_below": PSI_STABLE, "significant_at_or_above": PSI_SIGNIFICANT}

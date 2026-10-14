@@ -7,7 +7,7 @@ from typing import Any
 
 os.environ.setdefault("MLFLOW_DISABLE_AGENT_HINT", "1")
 
-EXPERIMENT_NAME = "placementpredict"
+EXPERIMENT_NAME = "fraud-detection"
 
 
 def _flatten(prefix: str, value: Any, out: dict[str, float]) -> None:

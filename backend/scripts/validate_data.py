@@ -1,4 +1,4 @@
-"""Validate a dataset against the feature contract and write a JSON report (DVC stage).
+"""Validate the transactions dataset against the feature contract and write a JSON report (DVC stage).
 
 Usage (from backend/):  python -m scripts.validate_data [path/to/data.csv]
 """

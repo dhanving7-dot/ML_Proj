@@ -1,38 +1,43 @@
-"""M3: decision trees, pruning, ensembles (bagging, boosting) and feature importance."""
+"""M3: decision trees, pruning, ensembles (bagging, boosting) and feature importance.
+
+Accuracy is useless on this data (predicting "legitimate" for everything scores 99.8 %), so trees
+are compared with average precision (PR-AUC) and ROC-AUC on the untouched validation split.
+Tree experiments train on every training fraud plus an undersampled set of legitimate rows so
+they run in seconds; the validation split keeps its natural 0.17 % fraud rate.
+"""
 from __future__ import annotations
 
 import time
 from typing import Any
 
 import numpy as np
-import pandas as pd
-from sklearn.ensemble import (
-    AdaBoostClassifier,
-    GradientBoostingClassifier,
-    HistGradientBoostingClassifier,
-    RandomForestClassifier,
-)
+from sklearn.ensemble import AdaBoostClassifier, GradientBoostingClassifier, HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.inspection import permutation_importance
-from sklearn.metrics import accuracy_score, f1_score, log_loss, roc_auc_score
+from sklearn.metrics import average_precision_score, log_loss, roc_auc_score
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 from .. import contract as C
 from .. import metrics as M
 from ..estimators import CLASSIFIER_LABELS, make_classifier, optional_available
-from ..features import build_pipeline, build_preprocessor
-from .common import LabData, r
-from .m2_linear import REG_FEATURES, _salary_design
+from ..features import build_pipeline, build_preprocessor, transformed_feature_names
+from .common import PCA, LabData, r
+from .m2_linear import REG_FEATURES, _amount_design
+
+ENRICHED_LEGIT = 20000
 
 
-def _design(data: LabData, train_rows: int | None) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str], dict]:
-    tr = data.sample("train", train_rows)
+def _design(data: LabData, n_legit: int = ENRICHED_LEGIT) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str], dict]:
+    tr = data.enriched("train", n_legit)
     va = data.validation
     feats = list(C.FEATURE_NAMES)
-    pre = build_preprocessor(feats, engineered=False)
+    pre = build_preprocessor()
     X_tr, X_va = pre.fit_transform(tr[feats]), pre.transform(va[feats])
-    names = [str(n) for n in pre.get_feature_names_out()]
-    info = data.split_info(len(tr), len(va), "Same preprocessing as production (fitted on the training sample).")
-    return X_tr, tr[C.TARGET].to_numpy(), X_va, va[C.TARGET].to_numpy(), names, info
+    info = data.split_info(tr, va, f"Training sample = every training fraud + {n_legit:,} legitimate rows (fraud rate {tr[C.TARGET].mean():.2%}); validation keeps the real rate.")
+    return X_tr, tr[C.TARGET].to_numpy(), X_va, va[C.TARGET].to_numpy(), transformed_feature_names(pre), info
+
+
+def _rank(y: np.ndarray, p: np.ndarray) -> dict[str, float | None]:
+    return {"average_precision": r(average_precision_score(y, p)), "roc_auc": r(roc_auc_score(y, p))}
 
 
 def _gini(counts: np.ndarray) -> float:
@@ -51,14 +56,10 @@ def _node_counts(tree: Any, node: int) -> np.ndarray:
     return np.asarray(tree.value[node][0] * tree.weighted_n_node_samples[node])
 
 
-def decision_tree(
-    data: LabData, criterion: str = "gini", max_depth: int | None = 4, min_samples_leaf: int = 20, ccp_alpha: float = 0.0, train_rows: int = 15000
-) -> dict[str, Any]:
-    X_tr, y_tr, X_va, y_va, names, info = _design(data, train_rows)
+def decision_tree(data: LabData, criterion: str = "gini", max_depth: int | None = 4, min_samples_leaf: int = 20, ccp_alpha: float = 0.0) -> dict[str, Any]:
+    X_tr, y_tr, X_va, y_va, names, info = _design(data)
     t = time.perf_counter()
-    clf = DecisionTreeClassifier(
-        criterion=criterion, max_depth=max_depth, min_samples_leaf=min_samples_leaf, ccp_alpha=ccp_alpha, random_state=0
-    ).fit(X_tr, y_tr)
+    clf = DecisionTreeClassifier(criterion=criterion, max_depth=max_depth, min_samples_leaf=min_samples_leaf, ccp_alpha=ccp_alpha, random_state=0).fit(X_tr, y_tr)
     fit_ms = (time.perf_counter() - t) * 1000
     tree = clf.tree_
     nodes = []
@@ -76,7 +77,7 @@ def decision_tree(
                 "impurity": r(tree.impurity[node]),
                 "samples": int(tree.n_node_samples[node]),
                 "counts": [int(round(c)) for c in counts],
-                "placed_rate": r(counts[1] / counts.sum()),
+                "fraud_rate": r(counts[1] / counts.sum()),
                 "left": None if leaf else int(tree.children_left[node]),
                 "right": None if leaf else int(tree.children_right[node]),
             }
@@ -119,24 +120,24 @@ def decision_tree(
         "depth": int(clf.get_depth()),
         "leaves": int(clf.get_n_leaves()),
         "fit_ms": r(fit_ms, 1),
-        "train": {"accuracy": r(accuracy_score(y_tr, p_tr >= 0.5)), "roc_auc": r(roc_auc_score(y_tr, p_tr))},
-        "validation": {"accuracy": r(accuracy_score(y_va, p_va >= 0.5)), "roc_auc": r(roc_auc_score(y_va, p_va))},
+        "train": _rank(y_tr, p_tr),
+        "validation": {**_rank(y_va, p_va), "at_0_5": M.classification_metrics(y_va, p_va, 0.5, probabilistic=False)},
         "nodes": nodes,
         "root_split": root_split,
         "feature_importance": [d for d in imp if d["importance"] > 0][:15],
     }
 
 
-def pruning(data: LabData, criterion: str = "gini", train_rows: int = 8000) -> dict[str, Any]:
-    X_tr, y_tr, X_va, y_va, names, info = _design(data, train_rows)
+def pruning(data: LabData, criterion: str = "gini") -> dict[str, Any]:
+    X_tr, y_tr, X_va, y_va, names, info = _design(data, 10000)
     depth_curve = []
     for d in list(range(1, 21)) + [None]:
         clf = DecisionTreeClassifier(criterion=criterion, max_depth=d, random_state=0).fit(X_tr, y_tr)
         depth_curve.append(
             {
                 "max_depth": d if d is not None else "none",
-                "train_accuracy": r(clf.score(X_tr, y_tr)),
-                "validation_accuracy": r(clf.score(X_va, y_va)),
+                "train_average_precision": r(average_precision_score(y_tr, clf.predict_proba(X_tr)[:, 1])),
+                "validation_average_precision": r(average_precision_score(y_va, clf.predict_proba(X_va)[:, 1])),
                 "leaves": int(clf.get_n_leaves()),
             }
         )
@@ -149,14 +150,14 @@ def pruning(data: LabData, criterion: str = "gini", train_rows: int = 8000) -> d
         ccp_curve.append(
             {
                 "ccp_alpha": float(f"{a:.6g}"),
-                "train_accuracy": r(clf.score(X_tr, y_tr)),
-                "validation_accuracy": r(clf.score(X_va, y_va)),
+                "train_average_precision": r(average_precision_score(y_tr, clf.predict_proba(X_tr)[:, 1])),
+                "validation_average_precision": r(average_precision_score(y_va, clf.predict_proba(X_va)[:, 1])),
                 "leaves": int(clf.get_n_leaves()),
                 "depth": int(clf.get_depth()),
             }
         )
-    best_depth = max(depth_curve, key=lambda d: d["validation_accuracy"])
-    best_ccp = max(ccp_curve, key=lambda d: (d["validation_accuracy"], -d["leaves"]))
+    best_depth = max(depth_curve, key=lambda d: d["validation_average_precision"])
+    best_ccp = max(ccp_curve, key=lambda d: (d["validation_average_precision"], -d["leaves"]))
     return {
         "split": info,
         "pre_pruning": {"curve": depth_curve, "best": best_depth},
@@ -165,8 +166,11 @@ def pruning(data: LabData, criterion: str = "gini", train_rows: int = 8000) -> d
     }
 
 
-def regression_tree(data: LabData, max_depth: int = 4) -> dict[str, Any]:
-    X_tr, y_tr, X_va, y_va, names, info = _salary_design(data)
+def regression_tree(data: LabData, max_depth: int = 4, train_rows: int = 60000) -> dict[str, Any]:
+    X_tr, y_tr, X_va, y_va, names, info = _amount_design(data)
+    rows = np.random.default_rng(0).choice(len(y_tr), min(train_rows, len(y_tr)), replace=False)
+    X_tr, y_tr = X_tr[rows], y_tr[rows]
+    info = {**info, "train_rows_used": int(len(rows)), "train_fraud_rows": None, "note": info["note"] + f" Trees are fitted on a random {len(rows):,}-row training sample for speed."}
     reg = DecisionTreeRegressor(criterion="squared_error", max_depth=max_depth, min_samples_leaf=20, random_state=0).fit(X_tr, y_tr)
     tree = reg.tree_
     L, R = int(tree.children_left[0]), int(tree.children_right[0])
@@ -175,23 +179,18 @@ def regression_tree(data: LabData, max_depth: int = 4) -> dict[str, Any]:
         "feature": names[tree.feature[0]],
         "threshold_scaled": r(tree.threshold[0]),
         "parent_mse": r(tree.impurity[0]),
-        "left": {"samples": int(nl), "mse": r(tree.impurity[L]), "mean_salary": r(tree.value[L][0][0])},
-        "right": {"samples": int(nr), "mse": r(tree.impurity[R]), "mean_salary": r(tree.value[R][0][0])},
+        "left": {"samples": int(nl), "mse": r(tree.impurity[L]), "mean_target": r(tree.value[L][0][0])},
+        "right": {"samples": int(nr), "mse": r(tree.impurity[R]), "mean_target": r(tree.value[R][0][0])},
         "weighted_children_mse": r((nl * tree.impurity[L] + nr * tree.impurity[R]) / n0),
         "mse_reduction": r(tree.impurity[0] - (nl * tree.impurity[L] + nr * tree.impurity[R]) / n0),
     }
     curve = []
     for d in range(1, 16):
         m = DecisionTreeRegressor(max_depth=d, min_samples_leaf=5, random_state=0).fit(X_tr, y_tr)
-        curve.append(
-            {
-                "max_depth": d,
-                "train_rmse": M.regression_metrics(y_tr, m.predict(X_tr))["rmse"],
-                "validation_rmse": M.regression_metrics(y_va, m.predict(X_va))["rmse"],
-            }
-        )
+        curve.append({"max_depth": d, "train_rmse": M.regression_metrics(y_tr, m.predict(X_tr))["rmse"], "validation_rmse": M.regression_metrics(y_va, m.predict(X_va))["rmse"]})
     return {
         "split": info,
+        "target": "log(1 + Amount)",
         "features": REG_FEATURES,
         "root_split": root,
         "validation_metrics": M.regression_metrics(y_va, reg.predict(X_va)),
@@ -199,10 +198,8 @@ def regression_tree(data: LabData, max_depth: int = 4) -> dict[str, Any]:
     }
 
 
-def ensembles(
-    data: LabData, n_estimators: int = 200, max_features: str = "sqrt", learning_rate: float = 0.1, train_rows: int = 15000
-) -> dict[str, Any]:
-    X_tr, y_tr, X_va, y_va, names, info = _design(data, train_rows)
+def ensembles(data: LabData, n_estimators: int = 200, max_features: str = "sqrt", learning_rate: float = 0.1) -> dict[str, Any]:
+    X_tr, y_tr, X_va, y_va, names, info = _design(data)
     mf: Any = None if max_features == "all" else max_features
     models: dict[str, Any] = {
         "decision_tree": DecisionTreeClassifier(random_state=0),
@@ -223,17 +220,17 @@ def ensembles(
         fit_s = time.perf_counter() - t
         fitted[key] = m
         p_tr, p_va = m.predict_proba(X_tr)[:, 1], m.predict_proba(X_va)[:, 1]
+        ap_tr, ap_va = average_precision_score(y_tr, p_tr), average_precision_score(y_va, p_va)
         rows.append(
             {
                 "model": key,
                 "label": CLASSIFIER_LABELS[key],
                 "family": "single tree" if key == "decision_tree" else ("bagging" if key == "random_forest" else "boosting"),
-                "train_accuracy": r(accuracy_score(y_tr, p_tr >= 0.5)),
-                "validation_accuracy": r(accuracy_score(y_va, p_va >= 0.5)),
+                "train_average_precision": r(ap_tr),
+                "validation_average_precision": r(ap_va),
                 "validation_roc_auc": r(roc_auc_score(y_va, p_va)),
-                "validation_f1": r(f1_score(y_va, p_va >= 0.5)),
                 "validation_log_loss": r(log_loss(y_va, np.clip(p_va, 1e-7, 1 - 1e-7))),
-                "overfit_gap": r(accuracy_score(y_tr, p_tr >= 0.5) - accuracy_score(y_va, p_va >= 0.5)),
+                "overfit_gap": r(ap_tr - ap_va),
                 "fit_seconds": r(fit_s, 3),
             }
         )
@@ -245,7 +242,15 @@ def ensembles(
             break
         rf_ws.set_params(n_estimators=n)
         rf_ws.fit(X_tr, y_tr)
-        oob_curve.append({"n_estimators": n, "oob_error": r(1 - rf_ws.oob_score_), "validation_error": r(1 - rf_ws.score(X_va, y_va))})
+        oob = rf_ws.oob_decision_function_[:, 1]
+        ok = np.isfinite(oob)
+        oob_curve.append(
+            {
+                "n_estimators": n,
+                "oob_average_precision": r(average_precision_score(y_tr[ok], oob[ok])),
+                "validation_average_precision": r(average_precision_score(y_va, rf_ws.predict_proba(X_va)[:, 1])),
+            }
+        )
     rng = np.random.default_rng(0)
     boot = rng.integers(0, len(y_tr), len(y_tr))
     gb = fitted["gradient_boosting"]
@@ -254,13 +259,15 @@ def ensembles(
         if i <= 10 or i % max(1, n_estimators // 40) == 0 or i == n_estimators:
             staged.append({"stage": i, "train_log_loss": r(log_loss(y_tr, pt[:, 1])), "validation_log_loss": r(log_loss(y_va, pv[:, 1]))})
     ada = fitted["adaboost"]
+    oob_p = rf.oob_decision_function_[:, 1]
+    ok = np.isfinite(oob_p)
     return {
         "split": info,
         "params": {"n_estimators": n_estimators, "max_features": max_features, "learning_rate": learning_rate},
         "protocol": "Every model is fitted on the same training sample and scored on the same validation split.",
-        "comparison": sorted(rows, key=lambda d: -d["validation_roc_auc"]),
+        "comparison": sorted(rows, key=lambda d: -d["validation_average_precision"]),
         "random_forest": {
-            "oob_accuracy": r(rf.oob_score_),
+            "oob_average_precision": r(average_precision_score(y_tr[ok], oob_p[ok])),
             "oob_curve": oob_curve,
             "bootstrap_unique_fraction": r(np.unique(boot).size / len(boot)),
             "expected_unique_fraction": r(1 - np.exp(-1)),
@@ -269,40 +276,32 @@ def ensembles(
         },
         "gradient_boosting_stages": staged,
         "adaboost": {"first_estimator_weights": [r(w) for w in ada.estimator_weights_[:25]], "first_estimator_errors": [r(e) for e in ada.estimator_errors_[:25]]},
-        "note": "Differences of a few thousandths in ROC-AUC between ensembles are within normal sampling variation; see M5 for a significance test.",
+        "note": "Validation has only about 70 fraud rows, so PR-AUC differences of a few hundredths are within sampling noise; see M5 for a paired bootstrap.",
     }
 
 
-def importance(data: LabData, model: str = "random_forest", train_rows: int = 15000, explain_index: int = 0) -> dict[str, Any]:
+def importance(data: LabData, model: str = "random_forest", explain_index: int = 0) -> dict[str, Any]:
     if model not in ("random_forest", "gradient_boosting", "xgboost", "lightgbm"):
         raise ValueError("model must be random_forest, gradient_boosting, xgboost or lightgbm")
-    tr = data.sample("train", train_rows)
-    va = data.sample("validation", 4000)
+    tr = data.enriched("train", ENRICHED_LEGIT)
+    va = data.enriched("validation", 4000)
     feats = list(C.FEATURE_NAMES)
     extra = {"n_estimators": 150} if model == "random_forest" else {}
-    pipe = build_pipeline(make_classifier(model, seed=0, **extra), feats, engineered=False)
+    pipe = build_pipeline(make_classifier(model, seed=0, **extra))
     pipe.fit(tr[feats], tr[C.TARGET])
-    names = [str(n) for n in pipe.named_steps["preprocess"].get_feature_names_out()]
+    names = transformed_feature_names(pipe[:-1])
     est = pipe.named_steps["model"]
 
     def to_raw(name: str) -> str:
-        for f in feats:
-            if name == f or name.startswith(f + "_"):
-                return f
-        return name.replace("missingindicator_", "")
+        return {"amount_log": "Amount", "hour_sin": "Time", "hour_cos": "Time"}.get(name, name)
 
     impurity_raw: dict[str, float] = {}
     for n, v in zip(names, est.feature_importances_):
         impurity_raw[to_raw(n)] = impurity_raw.get(to_raw(n), 0.0) + float(v)
     total = sum(impurity_raw.values()) or 1.0
-    perm = permutation_importance(pipe, va[feats], va[C.TARGET], scoring="roc_auc", n_repeats=5, random_state=0, n_jobs=1)
+    perm = permutation_importance(pipe, va[feats], va[C.TARGET], scoring="average_precision", n_repeats=5, random_state=0, n_jobs=1)
     rows = [
-        {
-            "feature": f,
-            "impurity": r(impurity_raw.get(f, 0.0) / total),
-            "permutation": r(perm.importances_mean[i]),
-            "permutation_std": r(perm.importances_std[i]),
-        }
+        {"feature": f, "impurity": r(impurity_raw.get(f, 0.0) / total), "permutation": r(perm.importances_mean[i]), "permutation_std": r(perm.importances_std[i])}
         for i, f in enumerate(feats)
     ]
     rows.sort(key=lambda d: -d["permutation"])
@@ -312,7 +311,6 @@ def importance(data: LabData, model: str = "random_forest", train_rows: int = 15
         try:
             import shap
 
-            # Exact TreeSHAP on a deep random forest is slow, so it explains fewer rows.
             n_explain = 150 if model == "random_forest" else 400
             Xt = pipe[:-1].transform(va[feats].iloc[:n_explain])
             explainer = shap.TreeExplainer(est)
@@ -326,12 +324,9 @@ def importance(data: LabData, model: str = "random_forest", train_rows: int = 15
             base_value = float(base[-1])
             mean_abs: dict[str, float] = {}
             for j, n in enumerate(names):
-                mean_abs[to_raw(n)] = mean_abs.get(to_raw(n), 0.0) + float(np.abs(sv[:, j]).mean())
+                mean_abs[n] = mean_abs.get(n, 0.0) + float(np.abs(sv[:, j]).mean())
             i = int(np.clip(explain_index, 0, len(sv) - 1))
-            contrib = sorted(
-                ({"feature": names[j], "shap": r(sv[i, j]), "value": r(Xt[i, j])} for j in range(len(names))),
-                key=lambda d: -abs(d["shap"]),
-            )
+            contrib = sorted(({"feature": names[j], "shap": r(sv[i, j]), "value": r(Xt[i, j])} for j in range(len(names))), key=lambda d: -abs(d["shap"]))
             raw_row = va[feats].iloc[i]
             shap_out = {
                 "available": True,
@@ -344,25 +339,27 @@ def importance(data: LabData, model: str = "random_forest", train_rows: int = 15
                     "base_value": r(base_value),
                     "output_value": r(base_value + float(sv[i].sum())),
                     "top_contributions": contrib[:10],
-                    "raw_inputs": {k: (None if pd.isna(v) else (v.item() if hasattr(v, "item") else v)) for k, v in raw_row.items()},
+                    "raw_inputs": {k: r(v, 4) for k, v in raw_row.items()},
                 },
             }
         except Exception as exc:  # SHAP is an optional, introductory extra
             shap_out = {"available": False, "error": f"{type(exc).__name__}: {exc}"}
-    sem = data.train[list(C.SEMESTERS)].corr().to_numpy()
-    off = sem[~np.eye(len(C.SEMESTERS), dtype=bool)]
+    corr = data.train[PCA].corr().to_numpy().copy()
+    np.fill_diagonal(corr, 0.0)
+    with_amount = data.train[PCA].corrwith(data.train["amount_log"]).abs().sort_values(ascending=False)
     return {
-        "split": data.split_info(len(tr), len(va), "Permutation importance uses a 4,000-row validation sample and ROC-AUC."),
+        "split": data.split_info(tr, va, "Permutation importance (average precision) uses every validation fraud + 4,000 legitimate validation rows."),
         "model": model,
         "importances": rows,
         "shap": shap_out,
         "limitations": {
-            "sgpa_correlation_min": r(off.min()),
-            "sgpa_correlation_max": r(off.max()),
+            "max_abs_correlation_between_pca_components": r(np.abs(corr).max()),
+            "strongest_correlation_with_log_amount": {"feature": str(with_amount.index[0]), "abs_correlation": r(with_amount.iloc[0])},
             "notes": [
-                "Impurity importance is computed on training data and favours high-cardinality / continuous features.",
-                "Permutation importance underestimates correlated features: permuting one SGPA column leaves the other seven to carry the same signal.",
-                "Neither measure is causal: a feature can be important for prediction without causing placement.",
+                "V1-V28 are PCA components and therefore uncorrelated with each other, so permutation importance among them is not diluted by correlated copies.",
+                "Amount is partly predictable from some components, which can share importance with it.",
+                "Impurity importance is computed on training data and favours continuous, high-cardinality features.",
+                "Neither measure is causal, and the PCA components have no published meaning, so importance cannot be translated into a business reason.",
             ],
         },
     }

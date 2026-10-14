@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
@@ -25,7 +26,7 @@ from .services.dataset_service import ensure_default_dataset
 from .services.events import record_event
 from .services.model_service import model_service
 
-log = logging.getLogger("placementpredict")
+log = logging.getLogger("fraudguard")
 
 UNLOGGED_PREFIXES = ("/api/health", "/docs", "/redoc", "/openapi.json")
 
@@ -50,11 +51,12 @@ async def lifespan(_: FastAPI):  # type: ignore[no-untyped-def]
 
 
 app = FastAPI(
-    title="PlacementPredict API",
+    title="FraudGuard API",
     version=API_VERSION,
     description=(
-        "Student placement prediction with a leakage-safe ML pipeline, model registry, monitoring, "
-        "retraining and an M2-M6 machine-learning laboratory. Predictions are statistical estimates, not guarantees."
+        "Credit-card fraud detection with Logistic Regression, Isolation Forest and a validated hybrid risk score: "
+        "leakage-safe training, model registry, monitoring, retraining and an M2-M6 machine-learning laboratory. "
+        "Risk scores are statistical estimates and support, but do not replace, human investigation."
     ),
     lifespan=lifespan,
 )
@@ -88,6 +90,14 @@ async def request_logging(request: Request, call_next):  # type: ignore[no-untyp
     return response
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    """422 with field locations and messages only. The rejected input is not echoed back: it may be a
+    non-finite number that JSON cannot represent, and echoing inputs is unnecessary exposure."""
+    errors = [{"loc": [str(p) for p in e.get("loc", ())], "msg": str(e.get("msg", "Invalid value")), "type": str(e.get("type", ""))} for e in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": errors})
+
+
 @app.exception_handler(AppError)
 async def app_error_handler(_: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
@@ -112,7 +122,7 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 
 @app.get("/", include_in_schema=False)
 def root() -> dict[str, Any]:
-    return {"name": "PlacementPredict API", "version": API_VERSION, "docs": "/docs"}
+    return {"name": "FraudGuard API", "version": API_VERSION, "docs": "/docs"}
 
 
 app.include_router(system.router)

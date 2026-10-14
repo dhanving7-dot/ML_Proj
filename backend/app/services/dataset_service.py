@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ml import contract as C
-from ml.data import clean_for_training, column_statistics, file_sha256, load_csv, split_data, validate_dataframe
+from ml.data import column_statistics, file_sha256, load_csv, prepare_splits, validate_dataframe
 
 from ..config import Settings
 from ..errors import InvalidInput, NotFound, PayloadTooLarge
@@ -23,7 +23,7 @@ def _positive_rate(df: pd.DataFrame) -> float | None:
     if C.TARGET not in df.columns:
         return None
     t = pd.to_numeric(df[C.TARGET], errors="coerce")
-    return round(float(t.mean()), 4) if t.notna().any() else None
+    return round(float(t.mean()), 6) if t.notna().any() else None
 
 
 def register_file(session: Session, path: Path, *, name: str, source: str) -> Dataset:
@@ -132,10 +132,10 @@ def dataset_dict(ds: Dataset) -> dict[str, Any]:
     }
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=4)
 def _stats_cached(path: str, sha: str) -> dict[str, Any]:
     df = load_csv(path)
-    cols = [c for c in df.columns if c != C.ID_COLUMN]
+    cols = [c for c in df.columns if c != C.TRANSACTION_ID]
     return {"rows": int(len(df)), "columns": column_statistics(df[cols])}
 
 
@@ -143,27 +143,49 @@ def dataset_stats(ds: Dataset) -> dict[str, Any]:
     return {"dataset_id": ds.id, **_stats_cached(ds.path, ds.sha256)}
 
 
-@lru_cache(maxsize=4)
-def _test_split(path: str, sha: str) -> pd.DataFrame:
-    return split_data(clean_for_training(load_csv(path))).test
+DEFAULT_SPLIT = {"seed": 42, "validation_size": 0.15, "test_size": 0.15, "drop_duplicates": True, "sample_rows": None}
 
 
-def sample_rows(ds: Dataset, n: int = 1, seed: int | None = None) -> list[dict[str, Any]]:
-    """Real rows from the held-out test split (never seen in training), for the form's example loader."""
-    test = _test_split(ds.path, ds.sha256)
-    picked = test.sample(n=min(n, len(test)), random_state=seed)
+def split_params(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """Split parameters of the active model (so 'held-out' rows really were held out), else the defaults."""
+    cfg = (metadata or {}).get("config") or {}
+    return {k: cfg.get(k, v) for k, v in DEFAULT_SPLIT.items()}
+
+
+@lru_cache(maxsize=2)
+def _test_split(path: str, sha: str, key: str) -> pd.DataFrame:
+    import json
+
+    p = json.loads(key)
+    return prepare_splits(
+        load_csv(path), seed=p["seed"], validation=p["validation_size"], test=p["test_size"], drop_duplicates=p["drop_duplicates"], sample_rows=p["sample_rows"]
+    ).test
+
+
+def test_split(ds: Dataset, metadata: dict[str, Any] | None) -> pd.DataFrame:
+    import json
+
+    return _test_split(ds.path, ds.sha256, json.dumps(split_params(metadata), sort_keys=True))
+
+
+def sample_rows(ds: Dataset, n: int = 1, seed: int | None = None, label: int | None = None, metadata: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Real rows from the held-out test split (never used for fitting or tuning), for the form's example loader.
+
+    ``label`` restricts the draw to fraud (1) or legitimate (0) rows; fraud is only 0.17 % of the data,
+    so a random draw would almost never show one.
+    """
+    test = test_split(ds, metadata)
+    pool = test if label is None else test[test[C.TARGET] == label]
+    if pool.empty:
+        raise InvalidInput("No matching rows in the held-out test split")
+    picked = pool.sample(n=min(n, len(pool)), random_state=seed)
     out = []
-    for _, row in picked.iterrows():
-        features = {}
-        for name in C.FEATURE_NAMES:
-            v = row[name]
-            if pd.isna(v):
-                features[name] = None
-            elif isinstance(C.FEATURES_BY_NAME[name], C.NumericFeature) and C.FEATURES_BY_NAME[name].integer:  # type: ignore[union-attr]
-                features[name] = int(v)
-            elif hasattr(v, "item"):
-                features[name] = v.item()
-            else:
-                features[name] = v
-        out.append({"student_id": int(row[C.ID_COLUMN]), "features": features, "actual_outcome": int(row[C.TARGET])})
+    for idx, row in picked.iterrows():
+        out.append(
+            {
+                "row_id": f"test-{int(idx)}",
+                "features": {name: float(row[name]) for name in C.FEATURE_NAMES},
+                "actual_class": int(row[C.TARGET]),
+            }
+        )
     return out

@@ -1,4 +1,4 @@
-"""Persistence model: datasets, model versions, training runs, predictions, monitoring and lab runs."""
+"""Persistence model: datasets, model versions, training runs, fraud predictions, monitoring and lab runs."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -8,6 +8,15 @@ from sqlalchemy import JSON, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base, UTCDateTime, utcnow
+
+
+class AppMeta(Base):
+    """Key/value table holding the schema version (checked on start-up)."""
+
+    __tablename__ = "app_meta"
+
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    value: Mapped[str] = mapped_column(String(200))
 
 
 class Dataset(Base):
@@ -20,7 +29,7 @@ class Dataset(Base):
     source: Mapped[str] = mapped_column(String(20))  # default | upload
     n_rows: Mapped[int] = mapped_column(Integer)
     n_columns: Mapped[int] = mapped_column(Integer)
-    positive_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    positive_rate: Mapped[float | None] = mapped_column(Float, nullable=True)  # fraud rate (Class = 1)
     validation_status: Mapped[str] = mapped_column(String(30))
     validation_report: Mapped[dict[str, Any]] = mapped_column(JSON)
     uploaded_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
@@ -44,7 +53,7 @@ class TrainingRun(Base):
     candidate_metrics: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     comparison: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     active_version_before: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    decision: Mapped[str | None] = mapped_column(String(20), nullable=True)  # promoted | rejected
+    decision: Mapped[str | None] = mapped_column(String(20), nullable=True)  # promoted | registered | rejected
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     new_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
     mlflow_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -58,12 +67,13 @@ class ModelVersion(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     version: Mapped[str] = mapped_column(String(20), unique=True, index=True)
     model_type: Mapped[str] = mapped_column(String(40))
-    status: Mapped[str] = mapped_column(String(20), index=True)  # active | archived
+    status: Mapped[str] = mapped_column(String(20), index=True)  # active | candidate | archived
     artifact_path: Mapped[str] = mapped_column(String(500))
     sha256: Mapped[str] = mapped_column(String(64))
     size_bytes: Mapped[int] = mapped_column(Integer)
     feature_set: Mapped[str] = mapped_column(String(40))
-    threshold: Mapped[float] = mapped_column(Float)
+    threshold: Mapped[float] = mapped_column(Float)  # HIGH_RISK threshold on the hybrid score
+    policy: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)  # fusion weight + all thresholds
     metrics: Mapped[dict[str, Any]] = mapped_column(JSON)
     dataset_id: Mapped[int | None] = mapped_column(ForeignKey("datasets.id"), nullable=True)
     training_run_id: Mapped[int | None] = mapped_column(ForeignKey("training_runs.id"), nullable=True)
@@ -74,7 +84,11 @@ class ModelVersion(Base):
 
 class Prediction(Base):
     __tablename__ = "predictions"
-    __table_args__ = (Index("ix_predictions_created", "created_at"), Index("ix_predictions_model", "model_version"))
+    __table_args__ = (
+        Index("ix_predictions_created", "created_at"),
+        Index("ix_predictions_model", "model_version"),
+        Index("ix_predictions_decision", "decision"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     request_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
@@ -82,15 +96,24 @@ class Prediction(Base):
     source: Mapped[str] = mapped_column(String(20))  # online | batch | replay
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     model_version: Mapped[str] = mapped_column(String(20))
+    transaction_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    amount: Mapped[float] = mapped_column(Float, index=True)
+    time_s: Mapped[float] = mapped_column(Float)
     inputs: Mapped[dict[str, Any]] = mapped_column(JSON)
     feature_vector: Mapped[list[float]] = mapped_column(JSON)
-    imputed_fields: Mapped[list[str]] = mapped_column(JSON, default=list)
-    probability: Mapped[float] = mapped_column(Float)
-    prediction: Mapped[int] = mapped_column(Integer)
-    threshold: Mapped[float] = mapped_column(Float)
+    lr_probability: Mapped[float] = mapped_column(Float)
+    anomaly_score: Mapped[float] = mapped_column(Float)
+    anomaly_percentile: Mapped[float] = mapped_column(Float)
+    hybrid_score: Mapped[float] = mapped_column(Float, index=True)
+    decision: Mapped[str] = mapped_column(String(12))  # LOW_RISK | REVIEW | HIGH_RISK
+    lr_flag: Mapped[int] = mapped_column(Integer)
+    if_flag: Mapped[int] = mapped_column(Integer)
+    policy: Mapped[dict[str, Any]] = mapped_column(JSON)  # thresholds in force when the prediction was made
+    explanation: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    out_of_range: Mapped[list[str]] = mapped_column(JSON, default=list)
     latency_ms: Mapped[float] = mapped_column(Float)
     timings: Mapped[dict[str, float]] = mapped_column(JSON, default=dict)
-    actual_outcome: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    actual_outcome: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1 = confirmed fraud, 0 = confirmed legitimate
     outcome_recorded_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
 

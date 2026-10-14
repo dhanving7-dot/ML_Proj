@@ -1,7 +1,10 @@
-"""Test fixtures: an isolated database, model registry and a stratified sample of the real dataset.
+"""Test fixtures: an isolated database, model registry and a sample of the real transactions dataset.
 
 Environment variables are set before the application is imported so the cached settings point at
 temporary locations and the developer's database/registry are never touched.
+
+The sample keeps 150 real fraud rows and 6,000 real legitimate rows (fraud over-represented so the
+small validation/test splits still contain positives). No synthetic rows are created.
 """
 from __future__ import annotations
 
@@ -12,39 +15,45 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from sklearn.model_selection import train_test_split
 
 BACKEND = Path(__file__).resolve().parents[1]
 PROJECT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
-_TMP = Path(tempfile.mkdtemp(prefix="pp-tests-"))
-SAMPLE_CSV = _TMP / "placement_sample.csv"
+DATASET = PROJECT / "data" / "raw" / "creditcard.csv"
+if not DATASET.exists():  # pragma: no cover - environment guard
+    pytest.exit(f"Tests need the real dataset at {DATASET} (see README: Dataset setup)", returncode=2)
 
-_full = pd.read_csv(PROJECT / "data" / "raw" / "placement_50k.csv")
-_sample, _ = train_test_split(_full, train_size=3000, stratify=_full["PlacementStatus"], random_state=0)
+_TMP = Path(tempfile.mkdtemp(prefix="fg-tests-"))
+SAMPLE_CSV = _TMP / "creditcard_sample.csv"
+
+_full = pd.read_csv(DATASET)
+_sample = pd.concat(
+    [_full[_full["Class"] == 1].sample(150, random_state=0), _full[_full["Class"] == 0].sample(6000, random_state=0)]
+).sort_values("Time")
 _sample.to_csv(SAMPLE_CSV, index=False)
+del _full
 
 os.environ.update(
     {
-        "PP_DATABASE_URL": f"sqlite:///{(_TMP / 'test.db').as_posix()}",
-        "PP_MODELS_DIR": str(_TMP / "models"),
-        "PP_UPLOADS_DIR": str(_TMP / "uploads"),
-        "PP_REPORTS_DIR": str(_TMP / "reports"),
-        "PP_DEFAULT_DATASET": str(SAMPLE_CSV),
-        "PP_MLFLOW_ENABLED": "false",
-        "PP_MIN_DRIFT_ROWS": "20",
-        "PP_MIN_LABELLED_FOR_PERFORMANCE": "10",
+        "FG_DATABASE_URL": f"sqlite:///{(_TMP / 'test.db').as_posix()}",
+        "FG_MODELS_DIR": str(_TMP / "models"),
+        "FG_UPLOADS_DIR": str(_TMP / "uploads"),
+        "FG_REPORTS_DIR": str(_TMP / "reports"),
+        "FG_DEFAULT_DATASET": str(SAMPLE_CSV),
+        "FG_MLFLOW_ENABLED": "false",
+        "FG_MIN_DRIFT_ROWS": "20",
+        "FG_MIN_LABELLED_FOR_PERFORMANCE": "10",
     }
 )
 
 FAST_CONFIG = {
-    "candidates": ["logistic_regression"],
+    "lr_c_grid": [0.1, 1.0],
     "cv_folds": 3,
-    "permutation_repeats": 2,
-    "importance_rows": 400,
+    "if_n_estimators": 100,
     "golden_examples": 10,
-    "min_validation_roc_auc": 0.6,
+    "permutation_repeats": 1,
+    "min_validation_average_precision": 0.2,
 }
 
 
@@ -58,6 +67,14 @@ def settings():
     from app.config import get_settings
 
     return get_settings()
+
+
+@pytest.fixture(scope="session")
+def trained(sample_df):
+    """One trained model shared by the ML unit tests."""
+    from ml.training import TrainConfig, train_model
+
+    return train_model(sample_df, TrainConfig.from_dict(FAST_CONFIG))
 
 
 @pytest.fixture(scope="session")
@@ -79,20 +96,18 @@ def client(settings):
         yield c
 
 
-@pytest.fixture()
-def student(sample_df) -> dict:
-    """A valid request body built from a real dataset row."""
+def to_record(row: pd.Series, **extra) -> dict:
     from ml import contract as C
 
-    row = sample_df.iloc[0]
-    rec = {}
-    for name in C.FEATURE_NAMES:
-        f = C.FEATURES_BY_NAME[name]
-        v = row[name]
-        if pd.isna(v):
-            rec[name] = None
-        elif isinstance(f, C.NumericFeature):
-            rec[name] = int(v) if f.integer else float(v)
-        else:
-            rec[name] = str(v)
-    return rec
+    return {**{name: float(row[name]) for name in C.FEATURE_NAMES}, **extra}
+
+
+@pytest.fixture()
+def transaction(sample_df) -> dict:
+    """A valid request body built from a real (legitimate) dataset row."""
+    return to_record(sample_df[sample_df["Class"] == 0].iloc[0])
+
+
+@pytest.fixture()
+def fraud_transaction(sample_df) -> dict:
+    return to_record(sample_df[sample_df["Class"] == 1].iloc[0])

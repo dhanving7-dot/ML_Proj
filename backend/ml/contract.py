@@ -1,160 +1,88 @@
-"""Feature contract: the single source of truth for column names, types, ranges and enums.
+"""Feature contract: the single source of truth for column names, types, ranges and labels.
 
-Both the training pipeline and the serving API validate data against this
-contract (the handout's "data contract" defence against training-serving skew).
+Both the training pipeline and the serving API validate data against this contract (the
+handout's "data contract" defence against training-serving skew).
+
+Dataset: the European credit-card transactions dataset (``creditcard.csv``): ``Time``,
+``V1``-``V28``, ``Amount`` and the label ``Class``. ``V1``-``V28`` are anonymised PCA
+components; their original meaning is not published, so this project never assigns one.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Literal
 
-TARGET = "PlacementStatus"
-REGRESSION_TARGET = "Salary Package"
-ID_COLUMN = "StudentID"
-ANOMALY_LABEL = "IsAnomaly"
-CLASS_LABELS = {0: "Not Placed", 1: "Placed"}
+TARGET = "Class"
+CLASS_LABELS = {0: "Legitimate", 1: "Fraud"}
+POSITIVE_LABEL = 1
 
-FeatureGroup = Literal["profile", "academic", "assessment", "experience"]
+# Final risk decisions produced by the hybrid system, from lowest to highest risk.
+DECISIONS: tuple[str, ...] = ("LOW_RISK", "REVIEW", "HIGH_RISK")
+
+# Optional request metadata that is stored with a prediction but never used as a model input.
+TRANSACTION_ID = "transaction_id"
+
+FeatureGroup = Literal["time", "amount", "pca"]
 
 
 @dataclass(frozen=True)
 class NumericFeature:
     name: str
-    minimum: float
-    maximum: float
     group: FeatureGroup
     description: str
-    integer: bool = False
-    nullable: bool = False
+    minimum: float | None = None  # None = unbounded (the value must still be finite)
+    maximum: float | None = None
     unit: str | None = None
 
     kind: str = field(default="numeric", init=False)
 
 
-@dataclass(frozen=True)
-class CategoricalFeature:
-    name: str
-    categories: tuple[str, ...]
-    group: FeatureGroup
-    description: str
-    ordered: bool = False  # True when a real ordering exists (ordinal encoding)
-    nullable: bool = False
-
-    kind: str = field(default="categorical", init=False)
-
-
-SEMESTERS = tuple(f"SGPA_Sem{i}" for i in range(1, 9))
-
-NOMINAL_FEATURES: tuple[CategoricalFeature, ...] = (
-    CategoricalFeature("Gender", ("Male", "Female"), "profile", "Student gender as recorded by the institution."),
-    CategoricalFeature(
-        "City",
-        ("Ahmedabad", "Bangalore", "Chennai", "Delhi", "Hyderabad", "Jaipur", "Kochi", "Kolkata", "Mumbai", "Pune"),
-        "profile",
-        "City of the college campus.",
-    ),
-    CategoricalFeature("Stream", ("CS", "IT", "ECE", "EE", "Mechanical", "Civil"), "profile", "Engineering stream."),
-    CategoricalFeature(
-        "Specialisation", ("AI", "DataScience", "Embedded", "Networking"), "profile", "Elective specialisation track."
-    ),
-    CategoricalFeature("Hostel", ("Yes", "No"), "profile", "Whether the student lives in the hostel."),
-    CategoricalFeature("HistoryOfBacklogs", ("Yes", "No"), "academic", "Whether the student ever had a backlog."),
-)
-
-# Ordered from lowest to highest so OrdinalEncoder preserves the real ordering.
-ORDINAL_FEATURES: tuple[CategoricalFeature, ...] = (
-    CategoricalFeature(
-        "CollegeTier", ("Tier3", "Tier2", "Tier1"), "profile", "Institution tier (Tier1 is the highest).", ordered=True
-    ),
-)
+PCA_FEATURES: tuple[str, ...] = tuple(f"V{i}" for i in range(1, 29))
 
 NUMERIC_FEATURES: tuple[NumericFeature, ...] = (
-    *(NumericFeature(s, 0.0, 10.0, "academic", f"Semester {s[-1]} grade point average.") for s in SEMESTERS),
-    NumericFeature("CGPA", 0.0, 10.0, "academic", "Cumulative grade point average."),
-    NumericFeature("AttendancePercent", 0.0, 100.0, "academic", "Overall attendance.", unit="%"),
-    NumericFeature("Internships", 0, 20, "experience", "Number of internships completed.", integer=True),
-    NumericFeature("Projects", 0, 30, "experience", "Number of projects completed.", integer=True),
-    NumericFeature("Workshops", 0, 30, "experience", "Workshops attended.", integer=True, nullable=True),
-    NumericFeature("Certifications", 0, 30, "experience", "Certifications earned.", integer=True),
-    NumericFeature("Publications", 0, 20, "experience", "Research publications.", integer=True),
-    NumericFeature("AptitudeTestScore", 0.0, 100.0, "assessment", "Aptitude test score.", nullable=True),
-    NumericFeature("SoftSkillsRating", 0.0, 5.0, "assessment", "Soft-skills rating (0-5).", nullable=True),
-    NumericFeature("CodingTestScore", 0.0, 100.0, "assessment", "Coding test score.", nullable=True),
-    NumericFeature("MockInterviewScore", 0.0, 100.0, "assessment", "Mock interview score.", nullable=True),
-    NumericFeature("ExtraCurricular", 0, 1, "experience", "1 if active in extra-curricular activities.", integer=True),
-)
-
-ALL_FEATURES: tuple[NumericFeature | CategoricalFeature, ...] = (
-    *NOMINAL_FEATURES,
-    *ORDINAL_FEATURES,
-    *NUMERIC_FEATURES,
-)
-FEATURE_NAMES: tuple[str, ...] = tuple(f.name for f in ALL_FEATURES)
-FEATURES_BY_NAME = {f.name: f for f in ALL_FEATURES}
-
-# Columns present in the raw dataset that must never be model inputs, with the reason.
-EXCLUDED_COLUMNS: dict[str, str] = {
-    ID_COLUMN: "Row identifier with no predictive meaning.",
-    REGRESSION_TARGET: "Post-outcome leakage: a salary only exists after a student is placed.",
-    ANOMALY_LABEL: "Dataset-generation annotation that is not available at prediction time.",
-    "CGPA_Tier": (
-        "Derived duplicate of CGPA (bins <6.5 / 6.5-8.0 / >=8.0) that disagrees with CGPA on a minority of rows; "
-        "its definition is undocumented, so it cannot be reproduced reliably at serving time and CGPA already carries the signal."
+    NumericFeature(
+        "Time",
+        "time",
+        "Seconds elapsed between this transaction and the first transaction in the dataset.",
+        minimum=0.0,
+        unit="s",
     ),
-}
+    *(
+        NumericFeature(name, "pca", "Anonymised principal component published with the dataset; its meaning is not disclosed.")
+        for name in PCA_FEATURES
+    ),
+    NumericFeature("Amount", "amount", "Transaction amount (currency not disclosed).", minimum=0.0),
+)
 
-# Documented binning rule observed in the dataset, used by data validation to detect inconsistent rows.
-CGPA_TIER_RULE = {"cutoffs": (6.5, 8.0), "labels": ("Low", "Mid", "High")}
-
-# Feature sets for the point-in-time experiment. "full" assumes all eight semesters are
-# complete when a prediction is made; "pre_final_year" only uses information that exists
-# before the final-year placement season.
-FEATURE_SETS: dict[str, tuple[str, ...]] = {
-    "full": FEATURE_NAMES,
-    "pre_final_year": tuple(n for n in FEATURE_NAMES if n not in ("SGPA_Sem7", "SGPA_Sem8", "CGPA")),
-}
+ALL_FEATURES: tuple[NumericFeature, ...] = NUMERIC_FEATURES
+FEATURE_NAMES: tuple[str, ...] = tuple(f.name for f in ALL_FEATURES)  # dataset column order
+FEATURES_BY_NAME = {f.name: f for f in ALL_FEATURES}
 
 RAW_REQUIRED_COLUMNS: tuple[str, ...] = (*FEATURE_NAMES, TARGET)
 
+# Columns that may appear in uploaded files but are never model inputs, with the reason.
+# The published dataset has none; an identifier column supplied with a batch is kept as metadata.
+EXCLUDED_COLUMNS: dict[str, str] = {
+    TRANSACTION_ID: "Optional client identifier. Stored with the prediction for search, never used as a model input.",
+}
 
-def feature_schema(feature_set: str = "full") -> list[dict]:
+# Minimum number of fraud rows required to train and evaluate (validation + test need positives).
+MIN_POSITIVE_ROWS = 20
+
+
+def feature_schema() -> list[dict]:
     """JSON-serialisable description of the features, used by the API and the frontend form."""
-    names = FEATURE_SETS[feature_set]
-    out: list[dict] = []
-    for name in names:
-        f = FEATURES_BY_NAME[name]
-        if isinstance(f, NumericFeature):
-            out.append(
-                {
-                    "name": f.name,
-                    "kind": "numeric",
-                    "group": f.group,
-                    "description": f.description,
-                    "minimum": f.minimum,
-                    "maximum": f.maximum,
-                    "integer": f.integer,
-                    "nullable": f.nullable,
-                    "unit": f.unit,
-                }
-            )
-        else:
-            out.append(
-                {
-                    "name": f.name,
-                    "kind": "ordinal" if f.ordered else "nominal",
-                    "group": f.group,
-                    "description": f.description,
-                    "categories": list(f.categories),
-                    "nullable": f.nullable,
-                }
-            )
-    return out
-
-
-def split_feature_kinds(names: tuple[str, ...] | list[str]) -> tuple[list[str], list[str], list[str]]:
-    """Return (numeric, nominal, ordinal) feature names restricted to ``names`` in contract order."""
-    wanted = set(names)
-    numeric = [f.name for f in NUMERIC_FEATURES if f.name in wanted]
-    nominal = [f.name for f in NOMINAL_FEATURES if f.name in wanted]
-    ordinal = [f.name for f in ORDINAL_FEATURES if f.name in wanted]
-    return numeric, nominal, ordinal
+    return [
+        {
+            "name": f.name,
+            "kind": "numeric",
+            "group": f.group,
+            "description": f.description,
+            "minimum": f.minimum,
+            "maximum": f.maximum,
+            "unit": f.unit,
+            "integer": False,
+            "nullable": False,
+        }
+        for f in ALL_FEATURES
+    ]
