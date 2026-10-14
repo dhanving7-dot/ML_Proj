@@ -1,5 +1,5 @@
 import { lazy } from "react";
-import { createBrowserRouter, RouterProvider, type RouteObject } from "react-router";
+import { createBrowserRouter, Navigate, RouterProvider, type RouteObject } from "react-router";
 import { Layout } from "./components/layout/Layout";
 import { ToastProvider } from "./components/ui/Toast";
 import { HealthProvider } from "./hooks/HealthContext";
@@ -7,7 +7,9 @@ import { RouteError } from "./pages/RouteError";
 
 const Home = lazy(() => import("./pages/Home"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
-const Predict = lazy(() => import("./pages/Predict"));
+const Analyze = lazy(() => import("./pages/Analyze"));
+const Transactions = lazy(() => import("./pages/Transactions"));
+const Evaluation = lazy(() => import("./pages/Evaluation"));
 const Lab = lazy(() => import("./pages/Lab"));
 const Lifecycle = lazy(() => import("./pages/Lifecycle"));
 const Monitoring = lazy(() => import("./pages/Monitoring"));
@@ -22,8 +24,13 @@ export const routes: RouteObject[] = [
     errorElement: <RouteError />,
     children: [
       { index: true, element: <Home /> },
-      { path: "dashboard", element: <Dashboard /> },
-      { path: "predict", element: <Predict /> },
+      { path: "overview", element: <Dashboard /> },
+      { path: "analyze", element: <Analyze /> },
+      { path: "transactions", element: <Transactions /> },
+      { path: "evaluation", element: <Evaluation /> },
+      // Paths of the previous PlacementPredict app keep working.
+      { path: "dashboard", element: <Navigate to="/overview" replace /> },
+      { path: "predict", element: <Navigate to="/analyze" replace /> },
       { path: "lab", element: <Lab /> },
       { path: "lifecycle", element: <Lifecycle /> },
       { path: "monitoring", element: <Monitoring /> },

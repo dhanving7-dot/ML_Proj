@@ -26,7 +26,7 @@ export default function Data() {
       <PageHeader
         crumb="Data"
         title="Datasets, validation & statistics"
-        description="Every dataset is validated against the feature contract before it can be used for training. Uploads are size-limited, parsed safely and stored under a random name."
+        description="Every dataset is validated against the feature contract (columns, types, missing and non-finite values, ranges, target labels, imbalance, duplicates) before it can be used for training. Uploads are size-limited, parsed safely and stored under a random name."
       />
       <Section className="space-y-6">
         <div className="grid gap-6 lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]">
@@ -63,7 +63,7 @@ export default function Data() {
             />
             {schema.data && (
               <Panel>
-                <PanelHeader eyebrow="Feature contract" title="Excluded columns" />
+                <PanelHeader eyebrow="Feature contract" title="Columns that are never model inputs" />
                 <ul className="space-y-3 text-xs text-ink-2">
                   {Object.entries(schema.data.excluded_columns).map(([k, v]) => (
                     <li key={k}>
@@ -97,7 +97,7 @@ function Uploader({ onUploaded }: { onUploaded: (d: DatasetDetail) => void }) {
   };
   return (
     <Panel>
-      <PanelHeader eyebrow="Ingestion" title="Upload a dataset" description="CSV only, up to 25 MB. It must contain the contract columns and PlacementStatus to be usable for training." />
+      <PanelHeader eyebrow="Ingestion" title="Upload a dataset" description="CSV only, up to 200 MB (the full creditcard.csv is about 144 MB). It must contain Time, V1–V28, Amount and Class to be usable for training." />
       <label className="flex cursor-pointer flex-col items-center gap-2 rounded-xl border border-dashed border-line-strong px-4 py-8 text-center hover:border-violet/60">
         <FileUp className="size-5 text-cyan" aria-hidden="true" />
         <span className="text-sm text-ink">{file ? file.name : "Choose a CSV file"}</span>
@@ -114,7 +114,7 @@ function Uploader({ onUploaded }: { onUploaded: (d: DatasetDetail) => void }) {
 function DatasetView({ id }: { id: number }) {
   const detail = useApi((s) => api.dataset(id, { signal: s }), [id]);
   const stats = useApi((s) => api.datasetStats(id, { signal: s }), [id]);
-  const [col, setCol] = useState<string>("CGPA");
+  const [col, setCol] = useState<string>("Amount");
   if (detail.error) return <ErrorState error={detail.error} onRetry={detail.refetch} />;
   if (!detail.data) return <LoadingBlock rows={8} />;
   const d = detail.data;
@@ -143,8 +143,8 @@ function DatasetView({ id }: { id: number }) {
             <dd className="font-display text-xl text-ink">{d.n_columns}</dd>
           </div>
           <div>
-            <dt className="text-[11px] uppercase tracking-[0.12em] text-ink-3">Placed rate</dt>
-            <dd className="font-display text-xl text-ink">{pct(d.positive_rate)}</dd>
+            <dt className="text-[11px] uppercase tracking-[0.12em] text-ink-3">Fraud rate</dt>
+            <dd className="font-display text-xl text-ink">{pct(d.positive_rate, 3)}</dd>
           </div>
         </dl>
       </Panel>
@@ -177,8 +177,8 @@ function DatasetView({ id }: { id: number }) {
               </div>
             )}
             <DataTable
-              columns={["Column", "Missing", "Mean", "Std", "Min", "Median", "Max", "Skewness", "Kurtosis"]}
-              rows={numeric.map((c) => [c.name, pct(c.missing_rate), num(c.mean, 2), num(c.std, 2), num(c.min, 2), num(c.median, 2), num(c.max, 2), num(c.skewness, 3), num(c.kurtosis, 3)])}
+              columns={["Column", "Missing", "Mean", "Std", "Min", "Median", "Max", "Skewness", "Kurtosis", "Mean (legit.)", "Mean (fraud)"]}
+              rows={numeric.map((c) => [c.name, pct(c.missing_rate), num(c.mean, 2), num(c.std, 2), num(c.min, 2), num(c.median, 2), num(c.max, 2), num(c.skewness, 3), num(c.kurtosis, 3), num(c.mean_legitimate, 3), num(c.mean_fraud, 3)])}
             />
           </>
         )}

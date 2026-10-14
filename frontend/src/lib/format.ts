@@ -54,7 +54,6 @@ export function humanize(key: string): string {
   return key
     .replace(/_/g, " ")
     .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/\bSem(\d)/g, "Sem $1")
     .replace(/^./, (c) => c.toUpperCase());
 }
 
@@ -70,3 +69,40 @@ export const MODEL_LABELS: Record<string, string> = {
 };
 
 export const modelLabel = (k: string | null | undefined) => (k ? (MODEL_LABELS[k] ?? humanize(k)) : "—");
+
+MODEL_LABELS.hybrid_lr_iforest = "Hybrid (LR + Isolation Forest)";
+MODEL_LABELS.isolation_forest = "Isolation Forest";
+
+export const DECISION_LABELS: Record<string, string> = { LOW_RISK: "Low risk", REVIEW: "Review", HIGH_RISK: "High risk" };
+export const decisionLabel = (d: string | null | undefined) => (d ? (DECISION_LABELS[d] ?? d) : "—");
+
+export const COMPONENT_LABELS: Record<string, string> = {
+  logistic_regression: "Logistic Regression",
+  isolation_forest: "Isolation Forest",
+  hybrid: "Hybrid",
+  hybrid_high_risk: "Hybrid · HIGH_RISK",
+  hybrid_review_or_high: "Hybrid · REVIEW or above",
+};
+
+/** Probabilities near 0 or 1 need more digits than a fixed format shows. */
+export function prob(x: number | null | undefined): string {
+  if (x == null || Number.isNaN(x)) return "—";
+  if (x > 0 && x < 0.0001) return x.toExponential(2);
+  if (x > 0.9999 && x < 1) return `1 − ${(1 - x).toExponential(1)}`;
+  return x.toFixed(4);
+}
+
+export function money(x: number | null | undefined): string {
+  if (x == null || Number.isNaN(x)) return "—";
+  return x.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** Seconds since the first transaction -> "day 2 · 03:15" on the 24 h cycle (not wall-clock time). */
+export function cycleTime(seconds: number | null | undefined): string {
+  if (seconds == null || Number.isNaN(seconds)) return "—";
+  const day = Math.floor(seconds / 86400) + 1;
+  const rem = seconds % 86400;
+  const h = Math.floor(rem / 3600);
+  const m = Math.floor((rem % 3600) / 60);
+  return `day ${day} · ${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}

@@ -21,7 +21,7 @@ export function Layout() {
 
   useEffect(() => {
     const page = NAV.find((n) => n.to === location.pathname)?.label;
-    document.title = page && page !== "Home" ? `${page} · PlacementPredict` : "PlacementPredict · ML placement prediction";
+    document.title = page ? `${page} · FraudGuard` : "FraudGuard · credit-card fraud detection";
   }, [location.pathname]);
 
   return (

@@ -3,10 +3,10 @@ import type { ClassMetrics, SweepPoint } from "../../api/types";
 import { ChartFrame } from "../../components/charts/ChartFrame";
 import { ChartTooltip } from "../../components/charts/ChartTooltip";
 import { ConfusionMatrix, HBars, MetricGrid, ThresholdSweep } from "../../components/charts/Common";
-import { axisProps, CHROME, gridProps, OUTCOME, SERIES } from "../../components/charts/theme";
+import { axisProps, CHROME, CLASS, gridProps, SERIES } from "../../components/charts/theme";
 import { SelectField, Slider } from "../../components/ui/Fields";
 import { Chip } from "../../components/ui/Status";
-import { num, pct, sci } from "../../lib/format";
+import { int, num, pct, sci } from "../../lib/format";
 import type { ModuleProps } from "../Lab";
 import { BarsChart, Card, DataTable, ExperimentShell, LinesChart, logFmt, Note, useExperiment } from "./kit";
 import { ModuleLayout } from "./ModuleLayout";
@@ -20,8 +20,9 @@ export function M2(props: ModuleProps) {
       {...props}
       intro={
         <>
-          Linear models on the placement data. Regression experiments predict <strong className="text-ink">Salary Package</strong> for placed students (a continuous
-          target); classification predicts placement. Preprocessing is always fitted on the training split and reused on validation data.
+          Linear models on the transactions. The dataset has one continuous column besides Time, so the regression experiments predict{" "}
+          <strong className="text-ink">log(1 + Amount)</strong> from V1–V28; classification predicts <strong className="text-ink">Class</strong> (fraud). Preprocessing is always
+          fitted on the training split and reused on validation data.
         </>
       }
       experiments={[
@@ -58,8 +59,8 @@ function LinearRegressionExp() {
       exp={exp}
       live
       title="Normal equation vs. gradient descent"
-      topics={["Linear regression", "Normal equation", "Gradient descent", "RMSE", "MAE", "MAPE", "R²"]}
-      estimate="< 1 s"
+      topics={["Linear regression", "Normal equation", "Gradient descent", "RMSE", "MAE", "R²"]}
+      estimate="≈ 2–5 s"
       controls={
         <>
           <SelectField label="Learning rate (α)" value={String(exp.params.learning_rate)} onChange={(v) => exp.setParam("learning_rate", Number(v))} options={LR_OPTIONS} hint="Large α can diverge" />
@@ -72,12 +73,12 @@ function LinearRegressionExp() {
         const lim = [Math.min(...r.predictions_sample.map((p) => Math.min(p.actual, p.predicted))), Math.max(...r.predictions_sample.map((p) => Math.max(p.actual, p.predicted)))];
         return (
           <>
-            <Card title="Validation metrics (placed students, target: salary in LPA)">
+            <Card title={`Validation metrics (target: ${r.target})`}>
               <MetricGrid
                 items={[
                   { label: "RMSE", value: num(r.validation_metrics.rmse, 3), hint: `train ${num(r.train_metrics.rmse, 3)}` },
                   { label: "MAE", value: num(r.validation_metrics.mae, 3) },
-                  { label: "MAPE", value: r.validation_metrics.mape != null ? pct(r.validation_metrics.mape) : "n/a" },
+                  { label: "MAPE", value: r.validation_metrics.mape != null ? pct(r.validation_metrics.mape) : "n/a", hint: r.validation_metrics.mape == null ? "zero amounts" : undefined },
                   { label: "R²", value: num(r.validation_metrics.r2, 3), hint: `train ${num(r.train_metrics.r2, 3)}` },
                 ]}
               />
@@ -86,45 +87,49 @@ function LinearRegressionExp() {
               <Card>
                 <LinesChart
                   title="Gradient descent: training MSE by iteration"
-                  subtitle={r.gradient_descent.diverged ? "Diverged: the learning rate is too large" : `Normal-equation optimum ${num(r.agreement.train_mse_normal_eq, 3)} (dashed)`}
+                  subtitle={r.gradient_descent.diverged ? "Diverged: the learning rate is too large" : `Normal-equation optimum ${num(r.agreement.train_mse_normal_eq, 4)} (dashed)`}
                   data={r.gradient_descent.loss_history}
                   x="iteration"
                   xLabel="Iteration"
                   series={[{ key: "train_mse", name: "Train MSE" }]}
                   refY={[{ value: r.agreement.train_mse_normal_eq, label: "Normal equation" }]}
-                  yFormat={(v) => num(v, 1)}
+                  yFormat={(v) => num(v, 2)}
                 />
               </Card>
               <Card>
                 <ChartFrame
-                  title="Predicted vs. actual salary (validation sample)"
+                  title="Predicted vs. actual log(1 + Amount) (validation sample)"
                   subtitle="Points on the dashed line are perfect predictions"
-                  legend={[{ label: "Students", color: SERIES[0] }, { label: "y = x", color: CHROME.muted, shape: "dash" }]}
+                  legend={[{ label: "Transactions", color: SERIES[0] }, { label: "y = x", color: CHROME.muted, shape: "dash" }]}
                   table={{ columns: ["Actual", "Predicted"], rows: r.predictions_sample.map((p) => [num(p.actual, 2), num(p.predicted, 2)]) }}
                   height={260}
                 >
                   <ResponsiveContainer>
                     <ScatterChart margin={{ top: 8, right: 12, bottom: 18, left: 0 }}>
                       <CartesianGrid {...gridProps} vertical />
-                      <XAxis type="number" dataKey="actual" name="Actual" domain={lim} {...axisProps} label={{ value: "Actual (LPA)", position: "insideBottom", offset: -10 }} tickFormatter={(v) => num(v, 0)} />
+                      <XAxis type="number" dataKey="actual" name="Actual" domain={lim} {...axisProps} label={{ value: "Actual log(1 + Amount)", position: "insideBottom", offset: -10 }} tickFormatter={(v) => num(v, 0)} />
                       <YAxis type="number" dataKey="predicted" name="Predicted" domain={lim} {...axisProps} width={40} tickFormatter={(v) => num(v, 0)} />
                       <ZAxis range={[20, 20]} />
                       <ReferenceLine segment={[{ x: lim[0], y: lim[0] }, { x: lim[1], y: lim[1] }]} stroke={CHROME.muted} strokeDasharray="4 4" />
-                      <Tooltip content={<ChartTooltip valueFormat={(v) => num(v, 2)} title={() => "Student"} />} />
-                      <Scatter data={r.predictions_sample} fill={SERIES[0]} fillOpacity={0.6} name="Student" />
+                      <Tooltip content={<ChartTooltip valueFormat={(v) => num(v, 2)} title={() => "Transaction"} />} />
+                      <Scatter data={r.predictions_sample} fill={SERIES[0]} fillOpacity={0.6} name="Transaction" />
                     </ScatterChart>
                   </ResponsiveContainer>
                 </ChartFrame>
               </Card>
             </div>
-            <Card title="Coefficients from three solvers" description={`Max |normal equation − scikit-learn| = ${sci(r.agreement.max_abs_diff_normal_eq_vs_sklearn)}; max |gradient descent − normal equation| = ${r.agreement.max_abs_diff_gd_vs_normal_eq == null ? "n/a (diverged)" : num(r.agreement.max_abs_diff_gd_vs_normal_eq, 4)}. Features are standardised on the training split.`}>
+            <Card
+              title="Coefficients from three solvers"
+              description={`Max |normal equation − scikit-learn| = ${sci(r.agreement.max_abs_diff_normal_eq_vs_sklearn)}; max |gradient descent − normal equation| = ${r.agreement.max_abs_diff_gd_vs_normal_eq == null ? "n/a (diverged)" : sci(r.agreement.max_abs_diff_gd_vs_normal_eq)}. Inputs are standardised on the training split.`}
+            >
               <DataTable
                 columns={["Feature", "Normal equation", "scikit-learn", "Gradient descent"]}
                 rows={[["(intercept)", num(r.intercept.normal_equation, 4), num(r.intercept.sklearn, 4), num(r.intercept.gradient_descent, 4)], ...r.coefficients.map((c) => [c.feature, num(c.normal_equation, 4), num(c.sklearn, 4), num(c.gradient_descent, 4)])]}
               />
               <div className="mt-4">
                 <Note>
-                  Condition number of XᵀX/n: <strong className="text-ink">{num(r.conditioning.condition_number, 1)}</strong>. {r.conditioning.note} Normal equation solved in {num(r.normal_equation_ms, 2)} ms; {r.gradient_descent.iterations} gradient steps took {num(r.gradient_descent.duration_ms, 1)} ms.
+                  Condition number of XᵀX/n: <strong className="text-ink">{num(r.conditioning.condition_number, 2)}</strong>. {r.conditioning.note} Normal equation solved in {num(r.normal_equation_ms, 2)} ms; {r.gradient_descent.iterations} gradient steps took{" "}
+                  {num(r.gradient_descent.duration_ms, 1)} ms.
                 </Note>
               </div>
             </Card>
@@ -144,12 +149,12 @@ interface RegRes {
   alpha_note: string;
 }
 
-const RIDGE = [0.01, 1, 10, 100, 1000, 10000, 100000].map((v) => ({ value: String(v), label: logFmt(v) }));
-const LASSO = [0.0001, 0.001, 0.01, 0.05, 0.1, 0.3, 1, 3].map((v) => ({ value: String(v), label: String(v) }));
+const RIDGE = [1, 100, 1000, 10000, 100000, 1000000, 10000000].map((v) => ({ value: String(v), label: logFmt(v) }));
+const LASSO = [0.0001, 0.001, 0.01, 0.05, 0.1, 0.3, 1].map((v) => ({ value: String(v), label: String(v) }));
 const NAMES: Record<string, string> = { ols: "OLS", ridge: "Ridge (L2)", lasso: "Lasso (L1)", elastic_net: "Elastic Net" };
 
 function RegularizationExp() {
-  const exp = useExperiment<RegRes>("m2", "regularization", { ridge_alpha: 100, lasso_alpha: 0.05, enet_alpha: 0.05, l1_ratio: 0.5 }, { auto: true });
+  const exp = useExperiment<RegRes>("m2", "regularization", { ridge_alpha: 1000, lasso_alpha: 0.01, enet_alpha: 0.01, l1_ratio: 0.5 }, { auto: true });
   return (
     <ExperimentShell
       exp={exp}
@@ -172,16 +177,15 @@ function RegularizationExp() {
         const pathData = [...r.path]
           .sort((a, b) => a.lasso_alpha - b.lasso_alpha)
           .map((p) => ({ log_alpha: Math.log10(p.lasso_alpha), nonzero: p.lasso_nonzero, ...Object.fromEntries(focus.map((f) => [f, p.lasso[f]])) }));
-        const rmse = [
-          ...r.path.map((p) => ({ log_alpha: Math.log10(p.ridge_alpha), ridge: p.ridge_val_rmse })),
-          ...r.path.map((p) => ({ log_alpha: Math.log10(p.lasso_alpha), lasso: p.lasso_val_rmse })),
-        ].sort((a, b) => a.log_alpha - b.log_alpha);
+        const rmse = [...r.path.map((p) => ({ log_alpha: Math.log10(p.ridge_alpha), ridge: p.ridge_val_rmse })), ...r.path.map((p) => ({ log_alpha: Math.log10(p.lasso_alpha), lasso: p.lasso_val_rmse }))].sort(
+          (a, b) => a.log_alpha - b.log_alpha,
+        );
         return (
           <>
-            <Card title="Model comparison on the validation split">
+            <Card title="Model comparison on the validation split (target: log(1 + Amount))">
               <DataTable
                 columns={["Model", "Zero coefs", "‖w‖₁", "‖w‖₂", "Train RMSE", "Val RMSE", "Val R²"]}
-                rows={r.summary.map((s) => [NAMES[s.model], s.zero_coefficients, num(s.l1_norm, 2), num(s.l2_norm, 2), num(s.train.rmse, 3), num(s.validation.rmse, 3), num(s.validation.r2, 3)])}
+                rows={r.summary.map((s) => [NAMES[s.model], s.zero_coefficients, num(s.l1_norm, 2), num(s.l2_norm, 2), num(s.train.rmse, 4), num(s.validation.rmse, 4), num(s.validation.r2, 4)])}
               />
             </Card>
             <div className="grid gap-6 lg:grid-cols-2">
@@ -212,8 +216,17 @@ function RegularizationExp() {
                 />
               </Card>
             </div>
-            <Card title="Coefficients by model (standardised features)">
-              <DataTable columns={["Feature", "OLS", "Ridge", "Lasso", "Elastic Net"]} rows={top.map((c) => [c.feature, num(c.ols, 3), num(c.ridge, 3), c.lasso === 0 ? <span className="text-ink-3">0 (dropped)</span> : num(c.lasso, 3), c.elastic_net === 0 ? <span className="text-ink-3">0 (dropped)</span> : num(c.elastic_net, 3)])} />
+            <Card title="Coefficients by model (standardised V1–V28)">
+              <DataTable
+                columns={["Feature", "OLS", "Ridge", "Lasso", "Elastic Net"]}
+                rows={top.map((c) => [
+                  c.feature,
+                  num(c.ols, 3),
+                  num(c.ridge, 3),
+                  c.lasso === 0 ? <span className="text-ink-3">0 (dropped)</span> : num(c.lasso, 3),
+                  c.elastic_net === 0 ? <span className="text-ink-3">0 (dropped)</span> : num(c.elastic_net, 3),
+                ])}
+              />
             </Card>
           </>
         );
@@ -225,33 +238,53 @@ function RegularizationExp() {
 /* ------------------------------------------------------------------ logistic */
 
 interface LogRes {
-  params: { C: number; regularization: string; threshold: number };
+  params: { C: number; regularization: string; threshold: number; class_weight: string };
   intercept: number;
   coefficients: { feature: string; coefficient: number; odds_ratio: number }[];
   zero_coefficients: number;
   sigmoid_curve: { z: number; sigmoid: number }[];
   sigmoid_points: { z: number; probability: number; label: number }[];
+  sigmoid_points_note: string;
   binary_cross_entropy: Record<string, number>;
+  class_weight_note: string;
   validation_metrics: ClassMetrics;
   threshold_sweep: SweepPoint[];
-  multinomial: { target: string; band_edges_lpa: number[]; classes: string[]; validation_accuracy: number; validation_macro_f1: number; majority_baseline_accuracy: number; confusion_matrix: number[][]; top_coefficients: Record<string, { feature: string; coefficient: number }[]> };
+  multinomial: { target: string; band_edges: number[]; classes: string[]; validation_accuracy: number; validation_macro_f1: number; majority_baseline_accuracy: number; confusion_matrix: number[][]; top_coefficients: Record<string, { feature: string; coefficient: number }[]> };
 }
 
 const C_OPTIONS = [0.0001, 0.001, 0.01, 0.1, 1, 10, 100].map((v) => ({ value: String(v), label: String(v) }));
 
 function LogisticExp() {
-  const exp = useExperiment<LogRes>("m2", "logistic", { C_value: 1, regularization: "l2", threshold: 0.5 }, { auto: true, live: true });
+  const exp = useExperiment<LogRes>("m2", "logistic", { C_value: 1, regularization: "l2", threshold: 0.5, class_weight: "balanced" }, { auto: true, live: true });
   return (
     <ExperimentShell
       exp={exp}
       live
-      title="Logistic regression"
-      topics={["Sigmoid", "Binary cross-entropy", "Decision threshold", "Probabilities", "L1 / L2", "Multinomial"]}
-      estimate="≈ 1 s"
+      title="Logistic regression for fraud"
+      topics={["Sigmoid", "Binary cross-entropy", "Class weights", "Decision threshold", "L1 / L2", "Multinomial"]}
+      estimate="≈ 2–5 s"
       controls={
         <>
           <SelectField label="Inverse regularisation C" value={String(exp.params.C_value)} onChange={(v) => exp.setParam("C_value", Number(v))} options={C_OPTIONS} hint="Smaller C = stronger penalty" />
-          <SelectField label="Penalty" value={String(exp.params.regularization)} onChange={(v) => exp.setParam("regularization", v)} options={[{ value: "l2", label: "L2 (ridge)" }, { value: "l1", label: "L1 (lasso)" }, { value: "none", label: "None" }]} />
+          <SelectField
+            label="Penalty"
+            value={String(exp.params.regularization)}
+            onChange={(v) => exp.setParam("regularization", v)}
+            options={[
+              { value: "l2", label: "L2 (ridge)" },
+              { value: "l1", label: "L1 (lasso)" },
+              { value: "none", label: "None" },
+            ]}
+          />
+          <SelectField
+            label="Class weights"
+            value={String(exp.params.class_weight)}
+            onChange={(v) => exp.setParam("class_weight", v)}
+            options={[
+              { value: "balanced", label: "Balanced (fraud ≈ 600× weight)" },
+              { value: "none", label: "None (real 0.17 % prior)" },
+            ]}
+          />
           <Slider label="Decision threshold" value={Number(exp.params.threshold)} min={0.05} max={0.95} step={0.05} onChange={(v) => exp.setParam("threshold", v)} format={(v) => v.toFixed(2)} />
         </>
       }
@@ -259,20 +292,19 @@ function LogisticExp() {
       {(d) => {
         const r = d.result;
         const m = r.validation_metrics;
-        const pts = r.sigmoid_points.map((p) => ({ ...p, jitter: p.label === 1 ? p.probability : p.probability }));
         return (
           <>
-            <Card title={`Validation metrics at threshold ${num(r.params.threshold, 2)}`}>
+            <Card title={`Validation metrics at threshold ${num(r.params.threshold, 2)}`} description={r.class_weight_note}>
               <MetricGrid
                 items={[
-                  { label: "Accuracy", value: pct(m.accuracy) },
                   { label: "Precision", value: num(m.precision, 3) },
                   { label: "Recall", value: num(m.recall, 3) },
                   { label: "F1", value: num(m.f1, 3) },
-                  { label: "ROC-AUC", value: num(m.roc_auc, 4), hint: "threshold-independent" },
-                  { label: "BCE (val)", value: num(r.binary_cross_entropy.validation_manual, 4), hint: `sklearn ${num(r.binary_cross_entropy.validation_sklearn, 4)}` },
-                  { label: "BCE (train)", value: num(r.binary_cross_entropy.train_manual, 4) },
-                  { label: "Zero coefs", value: String(r.zero_coefficients), hint: "L1 sets some to 0" },
+                  { label: "PR-AUC", value: num(m.average_precision, 4), hint: "threshold-independent" },
+                  { label: "ROC-AUC", value: num(m.roc_auc, 4) },
+                  { label: "False positives", value: int(m.false_positives), hint: `${int(m.false_negatives)} false negatives` },
+                  { label: "Accuracy", value: pct(m.accuracy, 2), hint: "misleading here" },
+                  { label: "BCE (val)", value: num(r.binary_cross_entropy.validation_manual, 5), hint: `sklearn ${num(r.binary_cross_entropy.validation_sklearn, 5)}` },
                 ]}
               />
             </Card>
@@ -280,27 +312,27 @@ function LogisticExp() {
               <Card>
                 <ChartFrame
                   title="The sigmoid maps the linear score z to a probability"
-                  subtitle="σ(z) = 1 / (1 + e⁻ᶻ); dots are validation students coloured by their true outcome"
-                  legend={[{ label: "σ(z)", color: CHROME.ink2, shape: "line" }, { label: "Actually placed", color: OUTCOME.placed }, { label: "Actually not placed", color: OUTCOME.notPlaced }]}
-                  table={{ columns: ["z", "P(placed)", "Actual"], rows: r.sigmoid_points.map((p) => [num(p.z, 2), num(p.probability, 3), p.label ? "Placed" : "Not placed"]) }}
+                  subtitle={`σ(z) = 1 / (1 + e⁻ᶻ). ${r.sigmoid_points_note}`}
+                  legend={[{ label: "σ(z)", color: CHROME.ink2, shape: "line" }, { label: "Fraud", color: CLASS.fraud }, { label: "Legitimate", color: CLASS.legitimate }]}
+                  table={{ columns: ["z", "P(fraud)", "Actual"], rows: r.sigmoid_points.map((p) => [num(p.z, 2), num(p.probability, 4), p.label ? "Fraud" : "Legitimate"]) }}
                   height={280}
                 >
                   <ResponsiveContainer>
                     <ComposedChart margin={{ top: 8, right: 12, bottom: 18, left: 0 }}>
                       <CartesianGrid {...gridProps} vertical />
-                      <XAxis type="number" dataKey="z" domain={[-10, 10]} allowDataOverflow {...axisProps} label={{ value: "Linear score z = w·x + b", position: "insideBottom", offset: -10 }} />
+                      <XAxis type="number" dataKey="z" domain={[-12, 12]} allowDataOverflow {...axisProps} label={{ value: "Linear score z = w·x + b", position: "insideBottom", offset: -10 }} />
                       <YAxis type="number" domain={[0, 1]} {...axisProps} width={36} tickFormatter={(v) => num(v, 1)} />
                       <ReferenceLine y={r.params.threshold} stroke={CHROME.muted} strokeDasharray="4 4" label={{ value: `threshold ${r.params.threshold}`, position: "insideTopLeft", fill: CHROME.muted, fontSize: 10 }} />
-                      <Tooltip content={<ChartTooltip valueFormat={(v) => num(v, 3)} title={(_, dd) => `z = ${num(dd?.z as number, 2)}`} />} />
-                      <Scatter data={pts.filter((p) => p.label === 1)} dataKey="probability" name="Actually placed" fill={OUTCOME.placed} fillOpacity={0.55} />
-                      <Scatter data={pts.filter((p) => p.label === 0)} dataKey="probability" name="Actually not placed" fill={OUTCOME.notPlaced} fillOpacity={0.6} />
+                      <Tooltip content={<ChartTooltip valueFormat={(v) => num(v, 4)} title={(_, dd) => `z = ${num(dd?.z as number, 2)}`} />} />
+                      <Scatter data={r.sigmoid_points.filter((p) => p.label === 0)} dataKey="probability" name="Legitimate" fill={CLASS.legitimate} fillOpacity={0.45} />
+                      <Scatter data={r.sigmoid_points.filter((p) => p.label === 1)} dataKey="probability" name="Fraud" fill={CLASS.fraud} fillOpacity={0.8} />
                       <Line data={r.sigmoid_curve} dataKey="sigmoid" name="σ(z)" stroke={CHROME.ink2} strokeWidth={2} dot={false} isAnimationActive />
                     </ComposedChart>
                   </ResponsiveContainer>
                 </ChartFrame>
               </Card>
               <Card>
-                <ConfusionMatrix cm={m.confusion_matrix} subtitle={`Validation split, ${m.support.toLocaleString()} students`} />
+                <ConfusionMatrix cm={m.confusion_matrix} subtitle={`Validation split, ${m.support.toLocaleString()} transactions (${m.positives} fraud)`} />
               </Card>
             </div>
             <Card>
@@ -309,13 +341,13 @@ function LogisticExp() {
             <Card>
               <HBars
                 title="Largest coefficients (log-odds per standardised unit)"
-                subtitle={`Intercept ${num(r.intercept, 3)}. Positive values raise P(placed); odds ratio = e^coefficient.`}
+                subtitle={`Intercept ${num(r.intercept, 3)}. Positive values raise P(fraud); odds ratio = e^coefficient. V-components have no published meaning.`}
                 data={r.coefficients.slice(0, 15).map((c) => ({ label: c.feature, value: c.coefficient }))}
                 diverging
                 valueLabel="Coefficient"
               />
             </Card>
-            <Card title="Multinomial logistic regression: salary band" description={`${r.multinomial.target}. Band edges: ${r.multinomial.band_edges_lpa.map((e) => `${e} LPA`).join(" / ")}.`}>
+            <Card title="Multinomial logistic regression: amount band" description={`${r.multinomial.target}. Band edges: ${r.multinomial.band_edges.map((e) => num(e, 2)).join(" / ")}.`}>
               <div className="grid gap-6 lg:grid-cols-2">
                 <ConfusionMatrix cm={r.multinomial.confusion_matrix} labels={r.multinomial.classes} title="3-class confusion matrix (validation)" />
                 <div className="space-y-4">
@@ -348,59 +380,70 @@ interface PreRes {
     feature: string;
     standard: Record<string, number>;
     minmax: Record<string, number>;
-    histograms: Record<"raw" | "standard" | "minmax", { x: number; count: number }[]>;
+    histograms: Partial<Record<"raw" | "standard" | "minmax" | "log1p", { x: number; count: number }[]>>;
     note: string;
   };
   encoding: {
     one_hot: { source: string; output_columns: string[] };
-    ordinal: { source: string; mapping: Record<string, number>; note: string };
-    target_encoding_city: { city: string; naive_mean: number; cross_fitted_full_fit: number }[];
+    ordinal: { source: string; edges: number[]; mapping: Record<string, number>; note: string };
+    target_encoding_hour: { hour: number; rows: number; naive_fraud_rate: number; cross_fitted_full_fit: number }[];
     leakage_demo: { column: string; naive: { train_roc_auc: number; validation_roc_auc: number }; cross_fitted: { train_roc_auc: number; validation_roc_auc: number }; explanation: string };
   };
   imputation: {
-    missingness: { feature: string; missing_rate_train: number; train_mean: number; train_median: number; placed_rate_when_missing: number; placed_rate_when_present: number }[];
+    simulation: string;
+    note: string;
+    missingness: { feature: string; missing_rate_train: number; train_mean: number; train_median: number; fraud_rate_when_missing: number; fraud_rate_when_present: number }[];
     missing_indicator_columns: string[];
-    downstream_comparison: { strategy: string; validation_roc_auc: number; validation_log_loss: number; fit_ms: number }[];
+    downstream_comparison: { strategy: string; validation_average_precision: number; validation_roc_auc: number; fit_ms: number }[];
     comparison_model: string;
   };
 }
 
-const NUMERIC = ["CGPA", "AttendancePercent", "AptitudeTestScore", "CodingTestScore", "MockInterviewScore", "SoftSkillsRating", "Internships", "Projects", "SGPA_Sem8"];
+const FEATURES = ["Amount", "Time", "V1", "V2", "V4", "V10", "V12", "V14", "V17"];
 
 function PreprocessingExp() {
-  const exp = useExperiment<PreRes>("m2", "preprocessing", { feature: "CodingTestScore" }, { auto: true, live: true });
+  const exp = useExperiment<PreRes>("m2", "preprocessing", { feature: "Amount", missing_rate: 0.1 }, { auto: true, live: true });
   return (
     <ExperimentShell
       exp={exp}
       live
       title="Scaling, encoding & imputation"
-      topics={["StandardScaler", "MinMaxScaler", "One-hot", "Ordinal", "Target encoding", "Cross-fitting", "Mean / median", "Model-based imputation", "MissingIndicator"]}
-      estimate="≈ 1–2 s"
-      controls={<SelectField label="Feature to scale" value={String(exp.params.feature)} onChange={(v) => exp.setParam("feature", v)} options={NUMERIC.map((f) => ({ value: f, label: f }))} />}
+      topics={["StandardScaler", "MinMaxScaler", "log transform", "One-hot", "Ordinal", "Target encoding", "Cross-fitting", "Mean / median", "Model-based imputation", "MissingIndicator"]}
+      estimate="≈ 5–10 s"
+      controls={
+        <>
+          <SelectField label="Feature to scale" value={String(exp.params.feature)} onChange={(v) => exp.setParam("feature", v)} options={FEATURES.map((f) => ({ value: f, label: f }))} />
+          <Slider label="Simulated missing rate" value={Number(exp.params.missing_rate)} min={0.01} max={0.5} step={0.01} onChange={(v) => exp.setParam("missing_rate", v)} format={(v) => pct(v, 0)} />
+        </>
+      }
     >
       {(d) => {
         const r = d.result;
         const s = r.scaling;
         const leak = r.encoding.leakage_demo;
+        const kinds = (["raw", "log1p", "standard", "minmax"] as const).filter((k) => s.histograms[k]);
+        const titles = { raw: "Raw values", log1p: "log(1 + x)", standard: "StandardScaler (z-score)", minmax: "MinMaxScaler [0, 1]" };
         return (
           <>
             <Card title={`Scaling ${s.feature} with parameters learned on the training split`} description={s.note}>
-              <div className="grid gap-4 md:grid-cols-3">
-                {(["raw", "standard", "minmax"] as const).map((k, i) => (
+              <div className={kinds.length === 4 ? "grid gap-4 md:grid-cols-2 xl:grid-cols-4" : "grid gap-4 md:grid-cols-3"}>
+                {kinds.map((k, i) => (
                   <BarsChart
                     key={k}
-                    title={k === "raw" ? "Raw values" : k === "standard" ? "StandardScaler (z-score)" : "MinMaxScaler [0, 1]"}
+                    title={titles[k]}
                     subtitle={
                       k === "raw"
                         ? "Training distribution"
-                        : k === "standard"
-                          ? `μ=${num(s.standard.mean_learned, 2)}, σ=${num(s.standard.std_learned, 2)} · val mean ${num(s.standard.validation_mean_after, 3)}`
-                          : `min=${num(s.minmax.min_learned, 1)}, max=${num(s.minmax.max_learned, 1)} · val range ${num(s.minmax.validation_min_after, 3)}–${num(s.minmax.validation_max_after, 3)}`
+                        : k === "log1p"
+                          ? "What the production pipeline applies to Amount"
+                          : k === "standard"
+                            ? `μ=${num(s.standard.mean_learned, 2)}, σ=${num(s.standard.std_learned, 2)} · val mean ${num(s.standard.validation_mean_after, 3)}`
+                            : `min=${num(s.minmax.min_learned, 1)}, max=${num(s.minmax.max_learned, 1)} · val ${num(s.minmax.validation_min_after, 3)}–${num(s.minmax.validation_max_after, 3)}`
                     }
-                    data={s.histograms[k]}
+                    data={s.histograms[k]!}
                     x="x"
                     xFormat={(v) => num(Number(v), k === "minmax" ? 2 : 1)}
-                    series={[{ key: "count", name: "Rows", color: SERIES[i === 0 ? 0 : i === 1 ? 6 : 2] }]}
+                    series={[{ key: "count", name: "Rows", color: SERIES[[0, 3, 6, 2][i]] }]}
                     yFormat={(v) => String(Math.round(v))}
                     height={180}
                   />
@@ -408,14 +451,16 @@ function PreprocessingExp() {
               </div>
             </Card>
             <div className="grid gap-6 lg:grid-cols-2">
-              <Card title="Categorical encoders">
+              <Card title="Encoders on categories derived from the data" description="The dataset itself has no categorical columns, so hour-of-cycle (from Time) and an amount band are used.">
                 <p className="text-xs text-ink-3">One-hot encoding of {r.encoding.one_hot.source} ({r.encoding.one_hot.output_columns.length} columns; unseen categories become all zeros):</p>
-                <div className="mt-2 flex flex-wrap gap-1">
+                <div className="mt-2 flex max-h-24 flex-wrap gap-1 overflow-y-auto">
                   {r.encoding.one_hot.output_columns.map((c) => (
                     <Chip key={c}>{c}</Chip>
                   ))}
                 </div>
-                <p className="mt-4 text-xs text-ink-3">Ordinal encoding of {r.encoding.ordinal.source}. {r.encoding.ordinal.note}</p>
+                <p className="mt-4 text-xs text-ink-3">
+                  Ordinal encoding of {r.encoding.ordinal.source} (edges {r.encoding.ordinal.edges.map((e) => num(e, 2)).join(" / ")}). {r.encoding.ordinal.note}
+                </p>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {Object.entries(r.encoding.ordinal.mapping).map(([k, v]) => (
                     <Chip key={k}>
@@ -424,10 +469,21 @@ function PreprocessingExp() {
                   ))}
                 </div>
                 <div className="mt-5">
-                  <DataTable columns={["City", "Naive mean", "Cross-fitted (full fit)"]} rows={r.encoding.target_encoding_city.map((c) => [c.city, num(c.naive_mean, 4), num(c.cross_fitted_full_fit, 4)])} />
+                  <BarsChart
+                    title="Target encoding of hour-of-cycle (fraud rate per hour)"
+                    subtitle="Naive training mean vs the smoothed, cross-fitted encoding"
+                    data={r.encoding.target_encoding_hour}
+                    x="hour"
+                    series={[
+                      { key: "naive_fraud_rate", name: "Naive mean" },
+                      { key: "cross_fitted_full_fit", name: "Cross-fitted" },
+                    ]}
+                    yFormat={(v) => pct(v, 2)}
+                    height={220}
+                  />
                 </div>
               </Card>
-              <Card title={`Target-encoding leakage on ${leak.column}`} description={leak.explanation}>
+              <Card title="Target-encoding leakage on an identifier" description={`${leak.column}. ${leak.explanation}`}>
                 <BarsChart
                   title="ROC-AUC of the encoded column alone"
                   data={[
@@ -445,19 +501,23 @@ function PreprocessingExp() {
                 />
               </Card>
             </div>
-            <Card title="Missing values and imputation" description={`Downstream comparison model: ${r.imputation.comparison_model}. MissingIndicator adds a 0/1 column for: ${r.imputation.missing_indicator_columns.join(", ")}.`}>
+            <Card
+              title="Missing values and imputation (simulated missingness)"
+              description={`${r.imputation.simulation} Downstream model: ${r.imputation.comparison_model}. MissingIndicator adds a 0/1 column for: ${r.imputation.missing_indicator_columns.join(", ")}.`}
+            >
               <div className="grid gap-6 lg:grid-cols-2">
                 <DataTable
-                  columns={["Feature", "Missing", "Mean", "Median", "Placed | missing", "Placed | present"]}
-                  rows={r.imputation.missingness.map((m) => [m.feature, pct(m.missing_rate_train), num(m.train_mean, 2), num(m.train_median, 2), pct(m.placed_rate_when_missing), pct(m.placed_rate_when_present)])}
+                  columns={["Feature", "Missing", "Mean", "Median", "Fraud | missing", "Fraud | present"]}
+                  rows={r.imputation.missingness.map((m) => [m.feature, pct(m.missing_rate_train), num(m.train_mean, 2), num(m.train_median, 2), pct(m.fraud_rate_when_missing, 2), pct(m.fraud_rate_when_present, 2)])}
                 />
-                <DataTable columns={["Strategy", "Val ROC-AUC", "Val log loss", "Fit ms"]} rows={r.imputation.downstream_comparison.map((c) => [c.strategy, num(c.validation_roc_auc, 4), num(c.validation_log_loss, 4), num(c.fit_ms, 0)])} />
+                <DataTable
+                  columns={["Strategy", "Val PR-AUC", "Val ROC-AUC", "Fit ms"]}
+                  rows={r.imputation.downstream_comparison.map((c) => [c.strategy, num(c.validation_average_precision, 4), num(c.validation_roc_auc, 4), num(c.fit_ms, 0)])}
+                />
               </div>
-              {r.imputation.missingness.every((m) => Math.abs(m.placed_rate_when_missing - m.placed_rate_when_present) < 0.03) && (
-                <div className="mt-4">
-                  <Note>The placed rate is almost the same whether a value is missing or present, so missingness carries little signal here; that is why the imputation strategies score so similarly.</Note>
-                </div>
-              )}
+              <div className="mt-4">
+                <Note>{r.imputation.note}</Note>
+              </div>
             </Card>
           </>
         );

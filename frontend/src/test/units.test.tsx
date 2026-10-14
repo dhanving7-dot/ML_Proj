@@ -7,7 +7,8 @@ import { Stat } from "../components/ui/Stat";
 import { useApi } from "../hooks/useApi";
 import { useCountUp } from "../hooks/useCountUp";
 import { usePrefersReducedMotion } from "../hooks/useReducedMotion";
-import { int, pct } from "../lib/format";
+import { cycleTime, int, pct, prob } from "../lib/format";
+import { validateTransaction } from "../pages/Analyze";
 import { setReducedMotion } from "./setup";
 
 function axiosErr(status: number, data: unknown) {
@@ -85,8 +86,29 @@ describe("reduced motion hook", () => {
 
 describe("ConfusionMatrix", () => {
   it("renders every count with an accessible label", () => {
-    render(<ConfusionMatrix cm={{ tn: 2165, fp: 407, fn: 187, tp: 4741 }} />);
-    expect(screen.getByText("4,741")).toBeInTheDocument();
-    expect(screen.getByLabelText(/Actual Placed, predicted Not placed: 187/)).toBeInTheDocument();
+    render(<ConfusionMatrix cm={{ tn: 42496, fp: 9, fn: 17, tp: 54 }} />);
+    expect(screen.getByText("42,496")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Actual Fraud, predicted Legitimate: 17/)).toBeInTheDocument();
+  });
+});
+
+describe("fraud formatting helpers", () => {
+  it("keeps tiny and near-one probabilities readable", () => {
+    expect(prob(0.00002)).toBe("2.00e-5");
+    expect(prob(0.25)).toBe("0.2500");
+    expect(prob(0.999998)).toMatch(/^1 − 2\.0e-6$/);
+  });
+  it("renders Time on the 24 h cycle, not as wall-clock time", () => {
+    expect(cycleTime(0)).toBe("day 1 · 00:00");
+    expect(cycleTime(86400 + 2 * 3600 + 15 * 60)).toBe("day 2 · 02:15");
+  });
+});
+
+describe("transaction validation", () => {
+  const f = (name: string, minimum: number | null) => ({ name, kind: "numeric" as const, group: "pca" as const, description: "", minimum, maximum: null, unit: null, integer: false, nullable: false });
+  it("requires finite values, enforces minimums and checks the optional ID", () => {
+    const errs = validateTransaction([f("Amount", 0), f("V1", null), f("V2", null)], { Amount: "-1", V1: "abc", V2: "", transaction_id: "has space" });
+    expect(errs).toEqual({ Amount: "Must be ≥ 0", V1: "Enter a finite number", V2: "Required", transaction_id: "Letters, digits and _ . : - only (max 64)" });
+    expect(validateTransaction([f("V1", null)], { V1: "-120.5", transaction_id: "ok-1" })).toEqual({});
   });
 });

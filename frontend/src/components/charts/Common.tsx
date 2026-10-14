@@ -28,7 +28,7 @@ function cellColor(frac: number): string {
 
 export function ConfusionMatrix({
   cm,
-  labels = ["Not placed", "Placed"],
+  labels = ["Legitimate", "Fraud"],
   title = "Confusion matrix",
   subtitle,
 }: {
@@ -168,10 +168,10 @@ export function ReliabilityChart({ series, title = "Reliability diagram", height
   return (
     <ChartFrame
       title={title}
-      subtitle="Mean predicted probability vs. observed fraction placed, per probability bin"
+      subtitle="Mean predicted probability vs. observed fraud rate, per probability bin"
       legend={legend}
       table={{
-        columns: ["Series", "Mean predicted", "Fraction placed"],
+        columns: ["Series", "Mean predicted", "Observed fraud rate"],
         rows: series.flatMap((s) => s.result.points.map((p) => [s.name, num(p.mean_predicted, 3), num(p.fraction_positive, 3)])),
       }}
       height={height}
@@ -252,7 +252,7 @@ export function ThresholdSweep({ data, threshold, title = "Metrics across decisi
         { label: "Recall", color: SERIES[1], shape: "line" },
         { label: "F1", color: SERIES[2], shape: "line" },
       ]}
-      table={{ columns: ["Threshold", "Precision", "Recall", "F1", "Accuracy"], rows: data.map((d) => [num(d.threshold, 3), num(d.precision, 3), num(d.recall, 3), num(d.f1, 3), num(d.accuracy, 3)]) }}
+      table={{ columns: ["Threshold", "Precision", "Recall", "F1", "Alert rate"], rows: data.map((d) => [num(d.threshold, 3), num(d.precision, 3), num(d.recall, 3), num(d.f1, 3), d.alert_rate != null ? num(d.alert_rate, 4) : "—"]) }}
       height={height}
     >
       <ResponsiveContainer>
@@ -283,5 +283,71 @@ export function MetricGrid({ items, minWidth = 128 }: { items: { label: string; 
         </div>
       ))}
     </dl>
+  );
+}
+
+/* --------------------------------------------------------------- overlay of several curves */
+
+export interface CurveSeries {
+  name: string;
+  color: string;
+  points: object[];
+  dashed?: boolean;
+}
+
+/** Several curves on shared numeric axes (e.g. PR curves of LR, Isolation Forest and the hybrid). */
+export function CurveOverlay({
+  title,
+  subtitle,
+  series,
+  x,
+  y,
+  xLabel,
+  yLabel,
+  height = 280,
+  step,
+  baseline,
+  diagonal,
+}: {
+  title: string;
+  subtitle?: string;
+  series: CurveSeries[];
+  x: string;
+  y: string;
+  xLabel: string;
+  yLabel: string;
+  height?: number;
+  step?: boolean;
+  baseline?: { y: number; label: string };
+  diagonal?: boolean;
+}) {
+  const val = (p: object, k: string) => (p as Record<string, number>)[k];
+  const sorted = series.map((s) => ({ ...s, points: [...s.points].sort((a, b) => val(a, x) - val(b, x)) }));
+  return (
+    <ChartFrame
+      title={title}
+      subtitle={subtitle}
+      legend={[
+        ...sorted.map((s) => ({ label: s.name, color: s.color, shape: (s.dashed ? "dash" : "line") as "dash" | "line" })),
+        ...(baseline ? [{ label: baseline.label, color: CHROME.muted, shape: "dash" as const }] : []),
+        ...(diagonal ? [{ label: "Chance", color: CHROME.muted, shape: "dash" as const }] : []),
+      ]}
+      table={{ columns: ["Series", xLabel, yLabel], rows: sorted.flatMap((s) => s.points.filter((_, i) => i % 5 === 0).map((p) => [s.name, num(val(p, x), 4), num(val(p, y), 4)])) }}
+      height={height}
+    >
+      <ResponsiveContainer>
+        <LineChart margin={{ top: 6, right: 12, bottom: 18, left: 0 }}>
+          <CartesianGrid {...gridProps} vertical />
+          <XAxis dataKey={x} type="number" domain={[0, 1]} {...axisProps} tickFormatter={(v) => num(v, 1)} label={{ value: xLabel, position: "insideBottom", offset: -10 }} allowDuplicatedCategory={false} />
+          <YAxis type="number" domain={[0, 1]} {...axisProps} width={36} tickFormatter={(v) => num(v, 1)} />
+          {baseline && <ReferenceLine y={baseline.y} stroke={CHROME.muted} strokeDasharray="4 4" />}
+          {diagonal && <ReferenceLine segment={[{ x: 0, y: 0 }, { x: 1, y: 1 }]} stroke={CHROME.muted} strokeDasharray="4 4" />}
+          <Tooltip content={<ChartTooltip valueFormat={(v) => num(v, 3)} title={(_, d) => `${xLabel} ${num(d?.[x] as number, 3)}`} />} />
+          {sorted.map((s) => (
+            <Line key={s.name} data={s.points} dataKey={y} name={s.name} stroke={s.color} strokeWidth={2} strokeDasharray={s.dashed ? "5 4" : undefined} dot={false} type={step ? "stepAfter" : "linear"} isAnimationActive animationDuration={1000} />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </ChartFrame>
   );
 }

@@ -3,7 +3,7 @@ import { ConfusionMatrix, MetricGrid, PrChart, ReliabilityChart, RocChart, Thres
 import { SERIES } from "../../components/charts/theme";
 import { SelectField, Slider } from "../../components/ui/Fields";
 import { StatusPill } from "../../components/ui/Status";
-import { modelLabel, num, pct } from "../../lib/format";
+import { int, modelLabel, num, pct } from "../../lib/format";
 import type { ModuleProps } from "../Lab";
 import { BarsChart, Card, DataTable, ExperimentShell, LinesChart, Note, useExperiment } from "./kit";
 import { ModuleLayout } from "./ModuleLayout";
@@ -15,8 +15,8 @@ export function M5(props: ModuleProps) {
       {...props}
       intro={
         <>
-          Evaluation done properly: model selection uses cross-validation on the training split, calibration and thresholds are tuned on validation data, and the held-out test split is
-          never touched here. Regression metrics (RMSE, MAE, MAPE, R²) appear in the M2 and M3 salary experiments and in the bootstrap test below.
+          Evaluation done properly on a 0.17 % positive rate: model selection uses cross-validation on the training split, calibration and thresholds are tuned on validation data, and
+          the held-out test split is never touched here. Scores are PR-AUC (average precision) and ROC-AUC, because accuracy rewards a model that never flags anything.
         </>
       }
       experiments={[
@@ -45,6 +45,8 @@ interface MetRes {
   no_skill_precision: number;
   threshold_sweep: SweepPoint[];
   best_f1_threshold: number;
+  accuracy_baseline: number;
+  note: string;
 }
 
 function MetricsExp() {
@@ -53,9 +55,9 @@ function MetricsExp() {
     <ExperimentShell
       exp={exp}
       live
-      title="Classification metrics"
-      topics={["Accuracy", "Precision", "Recall", "F1", "Confusion matrix", "ROC-AUC", "PR curve", "Average precision"]}
-      estimate="< 1 s"
+      title="Classification metrics on rare fraud"
+      topics={["Accuracy paradox", "Precision", "Recall", "F1", "Confusion matrix", "ROC-AUC", "PR curve", "Average precision"]}
+      estimate="≈ 1–5 s"
       controls={
         <>
           <SelectField label="Model" value={String(exp.params.model)} onChange={(v) => exp.setParam("model", v)} options={MODELS5.map((m) => ({ value: m, label: modelLabel(m) }))} />
@@ -71,20 +73,23 @@ function MetricsExp() {
             <Card title={`${r.label} on the validation split at threshold ${num(m.threshold, 2)}`}>
               <MetricGrid
                 items={[
-                  { label: "Accuracy", value: pct(m.accuracy) },
                   { label: "Precision", value: num(m.precision, 4), hint: "TP / (TP + FP)" },
                   { label: "Recall", value: num(m.recall, 4), hint: "TP / (TP + FN)" },
-                  { label: "F1", value: num(m.f1, 4), hint: `best F1 at t=${num(r.best_f1_threshold, 2)}` },
-                  { label: "Specificity", value: num(m.specificity, 4) },
+                  { label: "F1", value: num(m.f1, 4), hint: `best F1 at t=${num(r.best_f1_threshold, 3)}` },
+                  { label: "PR-AUC", value: num(m.average_precision, 4), hint: `no skill ${num(r.no_skill_precision, 4)}` },
                   { label: "ROC-AUC", value: num(m.roc_auc, 4) },
-                  { label: "Average precision", value: num(m.average_precision, 4) },
+                  { label: "False positives", value: int(m.false_positives), hint: `${int(m.false_negatives)} false negatives` },
+                  { label: "Accuracy", value: pct(m.accuracy, 2), hint: `"always legitimate" scores ${pct(r.accuracy_baseline, 2)}` },
                   { label: "Log loss", value: num(m.log_loss, 4) },
                 ]}
               />
+              <div className="mt-4">
+                <Note tone="warn">{r.note}</Note>
+              </div>
             </Card>
             <div className="grid gap-6 lg:grid-cols-2">
               <Card>
-                <ConfusionMatrix cm={m.confusion_matrix} subtitle={`${m.support.toLocaleString()} validation students; move the threshold to trade false positives for false negatives`} />
+                <ConfusionMatrix cm={m.confusion_matrix} subtitle={`${m.support.toLocaleString()} validation transactions (${m.positives} fraud); move the threshold to trade false positives for false negatives`} />
               </Card>
               <Card>
                 <ThresholdSweep data={r.threshold_sweep} threshold={m.threshold} />
@@ -110,67 +115,93 @@ function MetricsExp() {
 interface CvFold {
   fold: number;
   validation_rows: number;
+  fraud_rows: number;
   positive_rate: number;
-  roc_auc: number;
-  accuracy: number;
+  average_precision: number | null;
+  roc_auc: number | null;
+}
+interface CvSide {
+  folds: CvFold[];
+  average_precision_mean: number | null;
+  average_precision_std: number | null;
+  fraud_count_std: number;
+  positive_rate_std: number;
+  undefined_folds: number;
 }
 interface CvRes {
   model: string;
   k: number;
   overall_positive_rate: number;
-  kfold: { folds: CvFold[]; roc_auc_mean: number; roc_auc_std: number; positive_rate_std: number };
-  stratified_kfold: { folds: CvFold[]; roc_auc_mean: number; roc_auc_std: number; positive_rate_std: number };
+  kfold: CvSide;
+  stratified_kfold: CvSide;
   note: string;
 }
 
 function CvExp() {
-  const exp = useExperiment<CvRes>("m5", "cross-validation", { k: 5, model: "logistic_regression", sample_size: 3000 }, { auto: true, live: true });
+  const exp = useExperiment<CvRes>("m5", "cross-validation", { k: 5, model: "logistic_regression", sample_size: 20000 }, { auto: true, live: true });
   return (
     <ExperimentShell
       exp={exp}
       live
       title="K-fold vs. stratified K-fold"
-      topics={["Train/validation split", "K-fold", "Stratified K-fold"]}
-      estimate="< 1 s"
+      topics={["K-fold", "Stratified K-fold", "Rare positives"]}
+      estimate="≈ 1–5 s"
       controls={
         <>
           <Slider label="Folds (k)" value={Number(exp.params.k)} min={2} max={10} step={1} onChange={(v) => exp.setParam("k", v)} />
           <SelectField label="Model" value={String(exp.params.model)} onChange={(v) => exp.setParam("model", v)} options={["logistic_regression", "decision_tree", "random_forest"].map((m) => ({ value: m, label: modelLabel(m) }))} />
-          <SelectField label="Training sample" value={String(exp.params.sample_size)} onChange={(v) => exp.setParam("sample_size", Number(v))} options={[1000, 3000, 10000].map((v) => ({ value: String(v), label: v.toLocaleString() }))} hint="Smaller samples make fold variation visible" />
+          <SelectField
+            label="Training sample"
+            value={String(exp.params.sample_size)}
+            onChange={(v) => exp.setParam("sample_size", Number(v))}
+            options={[5000, 20000, 60000].map((v) => ({ value: String(v), label: v.toLocaleString() }))}
+            hint="Smaller samples have fewer frauds per fold"
+          />
         </>
       }
     >
       {(d) => {
         const r = d.result;
-        const rows = r.kfold.folds.map((f, i) => ({ fold: `Fold ${f.fold}`, kfold: f.positive_rate, stratified: r.stratified_kfold.folds[i]?.positive_rate, kfold_auc: f.roc_auc, stratified_auc: r.stratified_kfold.folds[i]?.roc_auc }));
+        const rows = r.kfold.folds.map((f, i) => ({
+          fold: `Fold ${f.fold}`,
+          kfold: f.fraud_rows,
+          stratified: r.stratified_kfold.folds[i]?.fraud_rows,
+          kfold_ap: f.average_precision,
+          stratified_ap: r.stratified_kfold.folds[i]?.average_precision,
+        }));
         return (
           <>
             <div className="grid gap-6 lg:grid-cols-2">
               <Card>
                 <BarsChart
-                  title="Placed rate inside each validation fold"
-                  subtitle={`Overall rate ${pct(r.overall_positive_rate)}. Std across folds: K-fold ${pct(r.kfold.positive_rate_std, 2)}, stratified ${pct(r.stratified_kfold.positive_rate_std, 2)}`}
+                  title="Fraud rows inside each validation fold"
+                  subtitle={`Overall rate ${pct(r.overall_positive_rate, 3)}. Std of fraud count: K-fold ${num(r.kfold.fraud_count_std, 2)}, stratified ${num(r.stratified_kfold.fraud_count_std, 2)}`}
                   data={rows}
                   x="fold"
-                  series={[{ key: "kfold", name: "K-fold" }, { key: "stratified", name: "Stratified" }]}
-                  yFormat={(v) => pct(v, 1)}
-                  yDomain={[Math.max(0, r.overall_positive_rate - 0.08), Math.min(1, r.overall_positive_rate + 0.08)]}
-                  refY={[{ value: r.overall_positive_rate, label: "overall" }]}
+                  series={[
+                    { key: "kfold", name: "K-fold" },
+                    { key: "stratified", name: "Stratified" },
+                  ]}
+                  yFormat={(v) => String(Math.round(v))}
                 />
               </Card>
               <Card>
                 <BarsChart
-                  title="ROC-AUC per fold"
-                  subtitle={`Mean ± std: K-fold ${num(r.kfold.roc_auc_mean, 4)} ± ${num(r.kfold.roc_auc_std, 4)}, stratified ${num(r.stratified_kfold.roc_auc_mean, 4)} ± ${num(r.stratified_kfold.roc_auc_std, 4)}`}
+                  title="PR-AUC per fold"
+                  subtitle={`Mean ± std: K-fold ${num(r.kfold.average_precision_mean, 3)} ± ${num(r.kfold.average_precision_std, 3)}, stratified ${num(r.stratified_kfold.average_precision_mean, 3)} ± ${num(r.stratified_kfold.average_precision_std, 3)}`}
                   data={rows}
                   x="fold"
-                  series={[{ key: "kfold_auc", name: "K-fold" }, { key: "stratified_auc", name: "Stratified" }]}
-                  yFormat={(v) => num(v, 3)}
-                  yDomain={["auto", "auto"]}
+                  series={[
+                    { key: "kfold_ap", name: "K-fold" },
+                    { key: "stratified_ap", name: "Stratified" },
+                  ]}
+                  yFormat={(v) => num(v, 2)}
+                  yDomain={[0, 1]}
                 />
               </Card>
             </div>
-            <Note>{r.note} The y-axes are zoomed and do not start at zero.</Note>
+            {r.kfold.undefined_folds > 0 && <Note tone="warn">{r.kfold.undefined_folds} plain K-fold fold(s) contained no fraud at all, so PR-AUC is undefined there.</Note>}
+            <Note>{r.note}</Note>
           </>
         );
       }}
@@ -183,19 +214,19 @@ function CvExp() {
 interface NestedRes {
   grid: Record<string, (number | string)[]>;
   non_nested: { best_score: number; best_params: Record<string, unknown>; explanation: string };
-  nested: { outer_folds: { outer_fold: number; outer_roc_auc: number; inner_best_roc_auc: number; best_params: Record<string, unknown> }[]; mean: number; std: number };
+  nested: { outer_folds: { outer_fold: number; outer_average_precision: number; inner_best_average_precision: number; best_params: Record<string, unknown> }[]; mean: number; std: number };
   optimism_gap: number;
   seconds: number;
 }
 
 function NestedExp() {
-  const exp = useExperiment<NestedRes>("m5", "nested-cv", { outer_k: 5, inner_k: 3, sample_size: 4000 }, { auto: false });
+  const exp = useExperiment<NestedRes>("m5", "nested-cv", { outer_k: 5, inner_k: 3, n_legit: 8000 }, { auto: false });
   return (
     <ExperimentShell
       exp={exp}
       title="Nested cross-validation"
       topics={["Nested CV", "Selection bias", "Grid search"]}
-      estimate="≈ 10 s"
+      estimate="≈ 10–20 s"
       controls={
         <>
           <Slider label="Outer folds" value={Number(exp.params.outer_k)} min={3} max={10} step={1} onChange={(v) => exp.setParam("outer_k", v)} />
@@ -207,7 +238,7 @@ function NestedExp() {
         const r = d.result;
         return (
           <>
-            <Card title="Decision-tree grid" description={`Grid: ${Object.entries(r.grid).map(([k, v]) => `${k} ∈ {${v.join(", ")}}`).join("; ")}. Computed in ${num(r.seconds, 1)} s.`}>
+            <Card title="Decision-tree grid (PR-AUC)" description={`Grid: ${Object.entries(r.grid).map(([k, v]) => `${k} ∈ {${v.join(", ")}}`).join("; ")}. Computed in ${num(r.seconds, 1)} s.`}>
               <MetricGrid
                 items={[
                   { label: "Non-nested best", value: num(r.non_nested.best_score, 4), hint: "same folds select and score" },
@@ -216,11 +247,17 @@ function NestedExp() {
                 ]}
               />
               <div className="mt-4">
-                <Note>{r.non_nested.explanation} The gap measured on this data is {Math.abs(r.optimism_gap) < 0.005 ? "small, because the grid is small and the dataset large" : "noticeable"}.</Note>
+                <Note>
+                  {r.non_nested.explanation} The gap measured on this data is {Math.abs(r.optimism_gap) < 0.005 ? "small" : "noticeable"}; with few frauds per fold, fold-to-fold noise is also large.
+                </Note>
               </div>
             </Card>
             <Card title="Outer folds: each picks its own hyperparameters on inner folds">
-              <DataTable columns={["Outer fold", "Inner best ROC-AUC", "Outer ROC-AUC", "Chosen parameters"]} numericFrom={1} rows={r.nested.outer_folds.map((f) => [f.outer_fold, num(f.inner_best_roc_auc, 4), num(f.outer_roc_auc, 4), JSON.stringify(f.best_params)])} />
+              <DataTable
+                columns={["Outer fold", "Inner best PR-AUC", "Outer PR-AUC", "Chosen parameters"]}
+                numericFrom={1}
+                rows={r.nested.outer_folds.map((f) => [f.outer_fold, num(f.inner_best_average_precision, 4), num(f.outer_average_precision, 4), JSON.stringify(f.best_params)])}
+              />
             </Card>
           </>
         );
@@ -231,21 +268,40 @@ function NestedExp() {
 
 /* ------------------------------------------------------------------ calibration */
 
+interface CalMethod {
+  label: string;
+  brier: number;
+  ece: number;
+  mean_predicted: number;
+  observed_rate: number;
+  log_loss: number;
+  average_precision: number;
+  reliability: CalibrationResult["points"];
+  histogram: CalibrationResult["histogram"];
+}
 interface CalRes {
   label: string;
-  methods: Record<"uncalibrated" | "sigmoid" | "isotonic", { label: string; brier: number; ece: number; log_loss: number; roc_auc: number; reliability: CalibrationResult["points"]; histogram: CalibrationResult["histogram"] }>;
+  methods: Record<"uncalibrated" | "sigmoid" | "isotonic", CalMethod>;
+  note: string;
 }
 
 function CalibExp() {
-  const exp = useExperiment<CalRes>("m5", "calibration", { model: "adaboost" }, { auto: true, live: true });
+  const exp = useExperiment<CalRes>("m5", "calibration", { model: "random_forest" }, { auto: true, live: true });
   return (
     <ExperimentShell
       exp={exp}
       live
       title="Probability calibration"
       topics={["Platt scaling", "Isotonic regression", "Reliability diagram", "Brier score", "ECE"]}
-      estimate="≈ 1–4 s"
-      controls={<SelectField label="Base model" value={String(exp.params.model)} onChange={(v) => exp.setParam("model", v)} options={["adaboost", "random_forest", "decision_tree", "logistic_regression", "hist_gradient_boosting"].map((m) => ({ value: m, label: modelLabel(m) }))} hint="AdaBoost is typically poorly calibrated" />}
+      estimate="≈ 2–6 s"
+      controls={
+        <SelectField
+          label="Base model"
+          value={String(exp.params.model)}
+          onChange={(v) => exp.setParam("model", v)}
+          options={["random_forest", "adaboost", "decision_tree", "logistic_regression", "hist_gradient_boosting"].map((m) => ({ value: m, label: modelLabel(m) }))}
+        />
+      }
     >
       {(d) => {
         const r = d.result;
@@ -255,11 +311,28 @@ function CalibExp() {
             <Card>
               <ReliabilityChart series={keys.map((k) => ({ name: r.methods[k].label, result: { points: r.methods[k].reliability, histogram: r.methods[k].histogram, ece: r.methods[k].ece, brier: r.methods[k].brier } }))} />
             </Card>
-            <Card title={`${r.label}: calibration metrics on held-back validation rows`} description="Lower Brier score, ECE and log loss are better. Monotonic calibration leaves ranking (ROC-AUC) almost unchanged.">
-              <DataTable columns={["Method", "Brier", "ECE", "Log loss", "ROC-AUC"]} rows={keys.map((k) => [r.methods[k].label, num(r.methods[k].brier, 4), num(r.methods[k].ece, 4), num(r.methods[k].log_loss, 4), num(r.methods[k].roc_auc, 4)])} />
+            <Card title={`${r.label}: calibration metrics on held-back validation rows`} description={r.note}>
+              <DataTable
+                columns={["Method", "Mean predicted", "Observed rate", "Brier", "ECE", "Log loss", "PR-AUC"]}
+                rows={keys.map((k) => [
+                  r.methods[k].label,
+                  pct(r.methods[k].mean_predicted, 3),
+                  pct(r.methods[k].observed_rate, 3),
+                  num(r.methods[k].brier, 5),
+                  num(r.methods[k].ece, 5),
+                  num(r.methods[k].log_loss, 4),
+                  num(r.methods[k].average_precision, 4),
+                ])}
+              />
             </Card>
             <Card>
-              <BarsChart title="Where the uncalibrated probabilities fall" data={r.methods.uncalibrated.histogram.map((h) => ({ bin: num(h.bin_start, 1), count: h.count }))} x="bin" series={[{ key: "count", name: "Rows" }]} yFormat={(v) => String(Math.round(v))} />
+              <BarsChart
+                title="Where the uncalibrated probabilities fall"
+                data={r.methods.uncalibrated.histogram.map((h) => ({ bin: num(h.bin_start, 1), count: h.count }))}
+                x="bin"
+                series={[{ key: "count", name: "Rows" }]}
+                yFormat={(v) => String(Math.round(v))}
+              />
             </Card>
           </>
         );
@@ -272,9 +345,9 @@ function CalibExp() {
 
 interface SearchOne {
   evaluations: number;
-  best_cv_roc_auc: number;
+  best_cv_average_precision: number;
   best_params: Record<string, unknown>;
-  validation_roc_auc: number;
+  validation_average_precision: number;
   seconds: number;
   trace: { iteration: number; score: number; best_so_far: number }[];
   error?: string;
@@ -294,7 +367,7 @@ function SearchExp() {
       exp={exp}
       title="Grid vs. random vs. Bayesian search"
       topics={["Grid search", "Random search", "Bayesian optimisation (TPE)"]}
-      estimate="≈ 15–30 s"
+      estimate="≈ 20–40 s"
       controls={
         <>
           <SelectField label="Model" value={String(exp.params.model)} onChange={(v) => exp.setParam("model", v)} options={["hist_gradient_boosting", "random_forest"].map((m) => ({ value: m, label: modelLabel(m) }))} />
@@ -311,10 +384,21 @@ function SearchExp() {
         return (
           <>
             <Card>
-              <LinesChart title="Best cross-validated ROC-AUC found so far" subtitle={`Grid size ${r.grid_size}; random and Bayesian use ${r.budget} trials each (3-fold CV)`} data={traces} x="iteration" xLabel="Evaluation" series={keys.map((k, i) => ({ key: k, name: names[k], color: SERIES[i], type: "stepAfter" as const }))} yFormat={(v) => num(v, 4)} />
+              <LinesChart
+                title="Best cross-validated PR-AUC found so far"
+                subtitle={`Grid size ${r.grid_size}; random and Bayesian use ${r.budget} trials each (3-fold stratified CV)`}
+                data={traces}
+                x="iteration"
+                xLabel="Evaluation"
+                series={keys.map((k, i) => ({ key: k, name: names[k], color: SERIES[i], type: "stepAfter" as const }))}
+                yFormat={(v) => num(v, 4)}
+              />
             </Card>
             <Card title="Winners, re-scored on the validation split">
-              <DataTable columns={["Strategy", "Evaluations", "Best CV ROC-AUC", "Validation ROC-AUC", "Seconds", "Best parameters"]} rows={keys.map((k) => [names[k], r.results[k].evaluations, num(r.results[k].best_cv_roc_auc, 4), num(r.results[k].validation_roc_auc, 4), num(r.results[k].seconds, 1), JSON.stringify(r.results[k].best_params)])} />
+              <DataTable
+                columns={["Strategy", "Evaluations", "Best CV PR-AUC", "Validation PR-AUC", "Seconds", "Best parameters"]}
+                rows={keys.map((k) => [names[k], r.results[k].evaluations, num(r.results[k].best_cv_average_precision, 4), num(r.results[k].validation_average_precision, 4), num(r.results[k].seconds, 1), JSON.stringify(r.results[k].best_params)])}
+              />
               <div className="mt-4">
                 <Note>{r.note} No strategy is guaranteed to win on every run; compare the numbers above rather than assuming Bayesian search is best.</Note>
               </div>
@@ -343,22 +427,45 @@ function LearnExp() {
       live
       title="Learning and validation curves"
       topics={["Learning curve", "Validation curve", "Underfitting", "Overfitting"]}
-      estimate="≈ 3 s"
+      estimate="≈ 3–10 s"
       controls={<SelectField label="Model" value={String(exp.params.model)} onChange={(v) => exp.setParam("model", v)} options={["decision_tree", "logistic_regression", "random_forest"].map((m) => ({ value: m, label: modelLabel(m) }))} />}
     >
       {(d) => {
         const r = d.result;
-        const lc = r.learning_curve.map((p) => ({ ...p, tl: p.train_mean - p.train_std, tu: p.train_mean + p.train_std, vl: p.validation_mean - p.validation_std, vu: p.validation_mean + p.validation_std }));
+        const lc = r.learning_curve.map((p) => ({ ...p, vl: p.validation_mean - p.validation_std, vu: p.validation_mean + p.validation_std }));
         const vc = r.validation_curve;
         const isLog = vc.parameter === "C";
         const vcData = vc.points.map((p) => ({ ...p, x: isLog ? Math.log10(p.value) : p.value }));
         return (
           <>
             <Card>
-              <LinesChart title={`${r.label}: learning curve`} subtitle="ROC-AUC as the training set grows (5-fold CV; band = ±1 std of validation)" data={lc} x="train_size" xLabel="Training rows" xFormat={(v) => v.toLocaleString()} series={[{ key: "train_mean", name: "Train", dot: true }, { key: "validation_mean", name: "Validation", dot: true }]} band={{ lower: "vl", upper: "vu", color: SERIES[1], name: "±1 std" }} />
+              <LinesChart
+                title={`${r.label}: learning curve`}
+                subtitle="PR-AUC as the training set grows (5-fold stratified CV on an enriched sample; band = ±1 std of validation)"
+                data={lc}
+                x="train_size"
+                xLabel="Training rows"
+                xFormat={(v) => v.toLocaleString()}
+                series={[
+                  { key: "train_mean", name: "Train", dot: true },
+                  { key: "validation_mean", name: "Validation", dot: true },
+                ]}
+                band={{ lower: "vl", upper: "vu", color: SERIES[1], name: "±1 std" }}
+              />
             </Card>
             <Card>
-              <LinesChart title={`Validation curve over ${vc.parameter}`} subtitle={r.rules} data={vcData} x="x" xLabel={isLog ? `log₁₀ ${vc.parameter}` : vc.parameter} xFormat={(v) => (isLog ? v.toFixed(1) : String(v))} series={[{ key: "train_mean", name: "Train", dot: true }, { key: "validation_mean", name: "Validation", dot: true }]} />
+              <LinesChart
+                title={`Validation curve over ${vc.parameter}`}
+                subtitle={r.rules}
+                data={vcData}
+                x="x"
+                xLabel={isLog ? `log₁₀ ${vc.parameter}` : vc.parameter}
+                xFormat={(v) => (isLog ? v.toFixed(1) : String(v))}
+                series={[
+                  { key: "train_mean", name: "Train", dot: true },
+                  { key: "validation_mean", name: "Validation", dot: true },
+                ]}
+              />
               <div className="mt-4 flex flex-wrap gap-2">
                 {vc.points.map((p) => (
                   <StatusPill key={p.value} tone={p.diagnosis === "good fit" ? "good" : "warning"}>
@@ -377,8 +484,26 @@ function LearnExp() {
 /* ------------------------------------------------------------------ statistical tests */
 
 interface StatsRes {
-  classification: { label_a: string; label_b: string; accuracy_a: number; accuracy_b: number; roc_auc_a: number; roc_auc_b: number; mcnemar: { table: Record<string, number>; statistic: number; p_value: number; method: string; significant_at_0_05: boolean } };
-  regression: { task: string; model_a: string; model_b: string; metrics_a: { rmse: number; mae: number; r2: number }; metrics_b: { rmse: number; mae: number; r2: number }; paired_bootstrap: { observed_difference: number; ci_95: [number, number]; n_boot: number; significant: boolean; histogram: { start: number; count: number }[] }; interpretation: string };
+  classification: {
+    label_a: string;
+    label_b: string;
+    threshold_a: number;
+    threshold_b: number;
+    test_half_rows: number;
+    test_half_frauds: number;
+    metrics_a: ClassMetrics;
+    metrics_b: ClassMetrics;
+    mcnemar: { table: Record<string, number>; statistic: number; p_value: number; method: string; significant_at_0_05: boolean };
+  };
+  ranking: {
+    average_precision_a: number;
+    average_precision_b: number;
+    roc_auc_a: number;
+    roc_auc_b: number;
+    paired_bootstrap: { observed_difference: number; ci_95: [number, number]; n_boot: number; significant: boolean; histogram: { start: number; count: number }[] };
+    interpretation: string;
+    score_note: string;
+  };
 }
 
 function StatsExp() {
@@ -388,7 +513,7 @@ function StatsExp() {
       exp={exp}
       title="Is the difference real?"
       topics={["McNemar's test", "Paired bootstrap", "Significance"]}
-      estimate="≈ 3–5 s"
+      estimate="≈ 10–20 s"
       controls={
         <>
           <SelectField label="Classifier A" value={String(exp.params.model_a)} onChange={(v) => exp.setParam("model_a", v)} options={MODELS5.map((m) => ({ value: m, label: modelLabel(m) }))} />
@@ -399,11 +524,14 @@ function StatsExp() {
       {(d) => {
         const c = d.result.classification;
         const mc = c.mcnemar;
-        const g = d.result.regression;
+        const g = d.result.ranking;
         const b = g.paired_bootstrap;
         return (
           <>
-            <Card title={`McNemar's test: ${c.label_a} vs. ${c.label_b}`} description={`Both classifiers predict the same validation rows at threshold 0.5. Accuracy ${pct(c.accuracy_a, 2)} vs ${pct(c.accuracy_b, 2)}; ROC-AUC ${num(c.roc_auc_a, 4)} vs ${num(c.roc_auc_b, 4)}.`}>
+            <Card
+              title={`McNemar's test: ${c.label_a} vs. ${c.label_b}`}
+              description={`Thresholds were chosen by F1 on one half of the validation split; the test uses the other half (${int(c.test_half_rows)} rows, ${c.test_half_frauds} fraud). Precision ${num(c.metrics_a.precision, 3)} vs ${num(c.metrics_b.precision, 3)}; recall ${num(c.metrics_a.recall, 3)} vs ${num(c.metrics_b.recall, 3)}.`}
+            >
               <div className="grid gap-6 lg:grid-cols-2">
                 <DataTable
                   columns={["", `${c.label_b} correct`, `${c.label_b} wrong`]}
@@ -413,16 +541,26 @@ function StatsExp() {
                   ]}
                 />
                 <div className="space-y-3">
-                  <MetricGrid items={[{ label: "Statistic", value: num(mc.statistic, 3) }, { label: "p-value", value: mc.p_value < 0.0001 ? mc.p_value.toExponential(2) : num(mc.p_value, 4) }]} />
+                  <MetricGrid
+                    items={[
+                      { label: "Statistic", value: num(mc.statistic, 3) },
+                      { label: "p-value", value: mc.p_value < 0.0001 ? mc.p_value.toExponential(2) : num(mc.p_value, 4) },
+                    ]}
+                  />
                   <StatusPill tone={mc.significant_at_0_05 ? "warning" : "neutral"}>{mc.significant_at_0_05 ? "Significant difference at α = 0.05" : "No significant difference at α = 0.05"}</StatusPill>
-                  <p className="text-xs text-ink-3">Only the discordant cells ({mc.table.a_only_correct} vs {mc.table.b_only_correct}) matter. Method: {mc.method}.</p>
+                  <p className="text-xs text-ink-3">
+                    Only the discordant cells ({mc.table.a_only_correct} vs {mc.table.b_only_correct}) matter. Method: {mc.method}.
+                  </p>
                 </div>
               </div>
             </Card>
-            <Card title={`Paired bootstrap: ${g.model_a} vs. ${g.model_b}`} description={`${g.task}. RMSE ${num(g.metrics_a.rmse, 3)} vs ${num(g.metrics_b.rmse, 3)}; R² ${num(g.metrics_a.r2, 3)} vs ${num(g.metrics_b.r2, 3)}. ${g.interpretation}`}>
+            <Card
+              title={`Paired bootstrap of PR-AUC: ${c.label_a} vs. ${c.label_b}`}
+              description={`PR-AUC ${num(g.average_precision_a, 4)} vs ${num(g.average_precision_b, 4)}; ROC-AUC ${num(g.roc_auc_a, 4)} vs ${num(g.roc_auc_b, 4)}. ${g.interpretation} ${g.score_note}`}
+            >
               <BarsChart
-                title={`RMSE(A) − RMSE(B) over ${b.n_boot.toLocaleString()} paired resamples`}
-                subtitle={`Observed ${num(b.observed_difference, 3)} · 95% CI [${num(b.ci_95[0], 3)}, ${num(b.ci_95[1], 3)}] · ${b.significant ? "the interval excludes 0" : "the interval includes 0"}`}
+                title={`AP(A) − AP(B) over ${b.n_boot.toLocaleString()} stratified paired resamples`}
+                subtitle={`Observed ${num(b.observed_difference, 4)} · 95% CI [${num(b.ci_95[0], 4)}, ${num(b.ci_95[1], 4)}] · ${b.significant ? "the interval excludes 0" : "the interval includes 0"}`}
                 data={b.histogram.map((h) => ({ diff: num(h.start, 3), count: h.count }))}
                 x="diff"
                 series={[{ key: "count", name: "Resamples", color: SERIES[6] }]}

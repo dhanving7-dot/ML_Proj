@@ -30,7 +30,7 @@ export default function Lab() {
       <PageHeader
         crumb="ML Lab"
         title="The machine-learning laboratory"
-        description="Run the M2–M6 techniques on the placement dataset. Experiments fit on the training split and score on the validation split; the test split stays reserved for the production model."
+        description="Run the M2–M6 techniques on the credit-card transactions. Experiments fit on the training split and score on the validation split with PR-AUC; the test split stays reserved for the production model."
       />
       <Section>
         <Tabs idPrefix="lab-module" ariaLabel="Course module" items={MODULES.map((m) => ({ key: m.key, label: m.label, hint: m.hint }))} value={module} onChange={setModule} className="mb-8 w-full sm:w-fit" />

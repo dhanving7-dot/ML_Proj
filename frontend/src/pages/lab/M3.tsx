@@ -1,7 +1,7 @@
 import { HBars, MetricGrid } from "../../components/charts/Common";
-import { CHROME, OUTCOME, SERIES } from "../../components/charts/theme";
+import { CHROME, CLASS, SERIES } from "../../components/charts/theme";
 import { SelectField, Slider, Toggle } from "../../components/ui/Fields";
-import { cn, modelLabel, num, pct } from "../../lib/format";
+import { cn, int, modelLabel, num, pct } from "../../lib/format";
 import type { ModuleProps } from "../Lab";
 import { BarsChart, Card, DataTable, ExperimentShell, LinesChart, Note, useExperiment } from "./kit";
 import { ModuleLayout } from "./ModuleLayout";
@@ -11,7 +11,7 @@ export function M3(props: ModuleProps) {
     <ModuleLayout
       id="m3"
       {...props}
-      intro={<>Tree-based models on the same preprocessing as production. All models in a comparison share the same training sample and validation split, so differences come from the algorithms rather than the data.</>}
+      intro={<>Tree-based models on the same preprocessing as production. Accuracy is useless at a 0.17 % fraud rate, so trees are compared with PR-AUC. Classifiers train on every training fraud plus an undersampled set of legitimate rows (stated with each run); validation keeps the real rate.</>}
       experiments={[
         { key: "decision-tree", label: "Decision tree", Component: TreeExp },
         { key: "pruning", label: "Pruning", Component: PruningExp },
@@ -33,7 +33,7 @@ interface TreeNode {
   impurity: number;
   samples: number;
   counts: number[];
-  placed_rate: number;
+  fraud_rate: number;
   left: number | null;
   right: number | null;
 }
@@ -42,8 +42,8 @@ interface TreeRes {
   depth: number;
   leaves: number;
   fit_ms: number;
-  train: { accuracy: number; roc_auc: number };
-  validation: { accuracy: number; roc_auc: number };
+  train: { average_precision: number; roc_auc: number };
+  validation: { average_precision: number; roc_auc: number; at_0_5: { precision: number; recall: number; false_positives: number } };
   nodes: TreeNode[];
   root_split: null | {
     feature: string;
@@ -97,15 +97,15 @@ function TreeDiagram({ nodes }: { nodes: TreeNode[] }) {
           const w = n.depth >= 3 ? 104 : 150;
           return (
             <g key={n.id} transform={`translate(${p.x - w / 2}, ${p.y - 22})`}>
-              <title>{`${n.feature ? `${n.feature} ≤ ${n.threshold}` : "Leaf"} · samples ${n.samples} · impurity ${n.impurity} · placed ${(n.placed_rate * 100).toFixed(1)}%`}</title>
+              <title>{`${n.feature ? `${n.feature} ≤ ${n.threshold}` : "Leaf"} · samples ${n.samples} · impurity ${n.impurity} · fraud ${(n.fraud_rate * 100).toFixed(1)}%`}</title>
               <rect width={w} height={44} rx={9} fill="#141831" stroke="rgba(255,255,255,0.14)" />
-              <rect x={6} y={36} width={w - 12} height={3} rx={1.5} fill={OUTCOME.notPlaced} />
-              <rect x={6} y={36} width={(w - 12) * n.placed_rate} height={3} rx={1.5} fill={OUTCOME.placed} />
+              <rect x={6} y={36} width={w - 12} height={3} rx={1.5} fill={CLASS.legitimate} />
+              <rect x={6} y={36} width={(w - 12) * n.fraud_rate} height={3} rx={1.5} fill={CLASS.fraud} />
               <text x={w / 2} y={16} textAnchor="middle" fill="#eef0fb" fontSize={n.depth >= 3 ? 9 : 10.5} fontWeight={600}>
                 {n.feature ? `${short(n.feature, n.depth >= 3 ? 9 : 16)} ≤ ${num(n.threshold, 2)}` : "leaf"}
               </text>
               <text x={w / 2} y={29} textAnchor="middle" fill={CHROME.ink2} fontSize="9.5">
-                n={n.samples} · {(n.placed_rate * 100).toFixed(0)}%{n.depth >= 3 ? "" : " placed"}
+                n={n.samples} · {(n.fraud_rate * 100).toFixed(0)}%{n.depth >= 3 ? "" : " fraud"}
               </text>
             </g>
           );
@@ -143,18 +143,19 @@ function TreeExp() {
             <Card>
               <MetricGrid
                 items={[
-                  { label: "Train accuracy", value: pct(r.train.accuracy) },
-                  { label: "Val accuracy", value: pct(r.validation.accuracy), hint: `gap ${num((r.train.accuracy - r.validation.accuracy) * 100, 1)} pts` },
+                  { label: "Train PR-AUC", value: num(r.train.average_precision, 4) },
+                  { label: "Val PR-AUC", value: num(r.validation.average_precision, 4), hint: `gap ${num(r.train.average_precision - r.validation.average_precision, 3)}` },
                   { label: "Val ROC-AUC", value: num(r.validation.roc_auc, 4) },
+                  { label: "Val precision @0.5", value: num(r.validation.at_0_5.precision, 3), hint: `recall ${num(r.validation.at_0_5.recall, 3)} · ${int(r.validation.at_0_5.false_positives)} FP` },
                   { label: "Depth / leaves", value: `${r.depth} / ${r.leaves}`, hint: `fit ${num(r.fit_ms, 0)} ms` },
                 ]}
               />
             </Card>
-            <Card title="Top of the fitted tree" description="Each node shows its split rule, size and share of placed students (blue part of the bar). Thresholds are on the standardised scale (0 = training mean). Left branch = condition true. Hover a node for the full rule.">
+            <Card title="Top of the fitted tree" description="Each node shows its split rule, size and share of fraud in the training sample (orange part of the bar). Thresholds are on the standardised scale (0 = training mean). Left branch = condition true. Hover a node for the full rule.">
               <TreeDiagram nodes={r.nodes} />
             </Card>
             {rs && (
-              <Card title={`Root split: ${rs.feature} ≤ ${rs.threshold}`} description={`Class counts [not placed, placed]: parent ${rs.parent_counts.join(" / ")}, left ${rs.left_counts.join(" / ")}, right ${rs.right_counts.join(" / ")}. Recomputed by hand from the counts; scikit-learn reports parent impurity ${rs.sklearn_parent_impurity}.`}>
+              <Card title={`Root split: ${rs.feature} ≤ ${rs.threshold}`} description={`Class counts [legitimate, fraud]: parent ${rs.parent_counts.join(" / ")}, left ${rs.left_counts.join(" / ")}, right ${rs.right_counts.join(" / ")}. Recomputed by hand from the counts; scikit-learn reports parent impurity ${rs.sklearn_parent_impurity}.`}>
                 <DataTable
                   columns={["Measure", "Parent", "Left", "Right", "Weighted children", "Decrease / gain"]}
                   rows={[
@@ -177,8 +178,8 @@ function TreeExp() {
 /* ------------------------------------------------------------------ pruning */
 
 interface PruneRes {
-  pre_pruning: { curve: { max_depth: number | string; train_accuracy: number; validation_accuracy: number; leaves: number }[]; best: { max_depth: number | string; validation_accuracy: number; leaves: number } };
-  post_pruning: { alphas_in_path: number; curve: { ccp_alpha: number; train_accuracy: number; validation_accuracy: number; leaves: number; depth: number }[]; best: { ccp_alpha: number; validation_accuracy: number; leaves: number; depth: number } };
+  pre_pruning: { curve: { max_depth: number | string; train_average_precision: number; validation_average_precision: number; leaves: number }[]; best: { max_depth: number | string; validation_average_precision: number; leaves: number } };
+  post_pruning: { alphas_in_path: number; curve: { ccp_alpha: number; train_average_precision: number; validation_average_precision: number; leaves: number; depth: number }[]; best: { ccp_alpha: number; validation_average_precision: number; leaves: number; depth: number } };
   note: string;
 }
 
@@ -195,33 +196,33 @@ function PruningExp() {
     >
       {(d) => {
         const r = d.result;
-        const depth = r.pre_pruning.curve.filter((c) => c.max_depth !== "none") as { max_depth: number; train_accuracy: number; validation_accuracy: number; leaves: number }[];
+        const depth = r.pre_pruning.curve.filter((c) => c.max_depth !== "none") as { max_depth: number; train_average_precision: number; validation_average_precision: number; leaves: number }[];
         const ccp = r.post_pruning.curve.filter((c) => c.ccp_alpha > 0).map((c) => ({ ...c, log_alpha: Math.log10(c.ccp_alpha) }));
         return (
           <>
             <div className="grid gap-6 lg:grid-cols-2">
               <Card>
                 <LinesChart
-                  title="Pre-pruning: accuracy vs. max_depth"
-                  subtitle={`Best validation accuracy ${pct(r.pre_pruning.best.validation_accuracy)} at depth ${r.pre_pruning.best.max_depth} (${r.pre_pruning.best.leaves} leaves)`}
+                  title="Pre-pruning: PR-AUC vs. max_depth"
+                  subtitle={`Best validation PR-AUC ${num(r.pre_pruning.best.validation_average_precision, 3)} at depth ${r.pre_pruning.best.max_depth} (${r.pre_pruning.best.leaves} leaves)`}
                   data={depth}
                   x="max_depth"
                   xLabel="max_depth"
-                  series={[{ key: "train_accuracy", name: "Train" }, { key: "validation_accuracy", name: "Validation" }]}
-                  yFormat={(v) => pct(v, 0)}
+                  series={[{ key: "train_average_precision", name: "Train" }, { key: "validation_average_precision", name: "Validation" }]}
+                  yFormat={(v) => num(v, 2)}
                   refX={[{ value: Number(r.pre_pruning.best.max_depth) }]}
                 />
               </Card>
               <Card>
                 <LinesChart
-                  title="Post-pruning: accuracy vs. ccp_alpha"
-                  subtitle={`${r.post_pruning.alphas_in_path} alphas in the pruning path; best ${pct(r.post_pruning.best.validation_accuracy)} at α=${r.post_pruning.best.ccp_alpha} (${r.post_pruning.best.leaves} leaves)`}
+                  title="Post-pruning: PR-AUC vs. ccp_alpha"
+                  subtitle={`${r.post_pruning.alphas_in_path} alphas in the pruning path; best ${num(r.post_pruning.best.validation_average_precision, 3)} at α=${r.post_pruning.best.ccp_alpha} (${r.post_pruning.best.leaves} leaves)`}
                   data={ccp}
                   x="log_alpha"
                   xLabel="log₁₀ ccp_alpha"
                   xFormat={(v) => v.toFixed(1)}
-                  series={[{ key: "train_accuracy", name: "Train" }, { key: "validation_accuracy", name: "Validation" }]}
-                  yFormat={(v) => pct(v, 0)}
+                  series={[{ key: "train_average_precision", name: "Train" }, { key: "validation_average_precision", name: "Validation" }]}
+                  yFormat={(v) => num(v, 2)}
                 />
               </Card>
             </div>
@@ -242,7 +243,7 @@ function PruningExp() {
 
 interface RegTreeRes {
   features: string[];
-  root_split: { feature: string; threshold_scaled: number; parent_mse: number; left: { samples: number; mse: number; mean_salary: number }; right: { samples: number; mse: number; mean_salary: number }; weighted_children_mse: number; mse_reduction: number };
+  root_split: { feature: string; threshold_scaled: number; parent_mse: number; left: { samples: number; mse: number; mean_target: number }; right: { samples: number; mse: number; mean_target: number }; weighted_children_mse: number; mse_reduction: number };
   validation_metrics: { rmse: number; mae: number; r2: number; mape: number | null };
   depth_curve: { max_depth: number; train_rmse: number; validation_rmse: number }[];
 }
@@ -253,9 +254,9 @@ function RegTreeExp() {
     <ExperimentShell
       exp={exp}
       live
-      title="Regression tree (salary)"
+      title="Regression tree (log amount)"
       topics={["Regression trees", "MSE splitting", "Variance reduction"]}
-      estimate="≈ 2 s"
+      estimate="≈ 10–15 s"
       controls={<Slider label="max_depth" value={Number(exp.params.max_depth)} min={1} max={15} step={1} onChange={(v) => exp.setParam("max_depth", v)} />}
     >
       {(d) => {
@@ -266,16 +267,16 @@ function RegTreeExp() {
             <Card title={`Root split on ${s.feature} (standardised threshold ${s.threshold_scaled})`} description="A regression tree chooses the split that most reduces the weighted mean squared error of the children.">
               <MetricGrid
                 items={[
-                  { label: "Parent MSE", value: num(s.parent_mse, 2) },
-                  { label: "Left MSE", value: num(s.left.mse, 2), hint: `n=${s.left.samples}, mean ${num(s.left.mean_salary, 2)} LPA` },
-                  { label: "Right MSE", value: num(s.right.mse, 2), hint: `n=${s.right.samples}, mean ${num(s.right.mean_salary, 2)} LPA` },
-                  { label: "MSE reduction", value: num(s.mse_reduction, 2), hint: `weighted children ${num(s.weighted_children_mse, 2)}` },
+                  { label: "Parent MSE", value: num(s.parent_mse, 3) },
+                  { label: "Left MSE", value: num(s.left.mse, 3), hint: `n=${s.left.samples}, mean ${num(s.left.mean_target, 2)}` },
+                  { label: "Right MSE", value: num(s.right.mse, 3), hint: `n=${s.right.samples}, mean ${num(s.right.mean_target, 2)}` },
+                  { label: "MSE reduction", value: num(s.mse_reduction, 3), hint: `weighted children ${num(s.weighted_children_mse, 3)}` },
                 ]}
               />
             </Card>
             <Card>
               <LinesChart
-                title="RMSE vs. depth (salary, placed students)"
+                title="RMSE vs. depth (target log(1 + Amount))"
                 subtitle={`At the chosen depth: validation RMSE ${num(r.validation_metrics.rmse, 3)}, R² ${num(r.validation_metrics.r2, 3)}`}
                 data={r.depth_curve}
                 x="max_depth"
@@ -295,8 +296,8 @@ function RegTreeExp() {
 
 interface EnsRes {
   protocol: string;
-  comparison: { model: string; label: string; family: string; train_accuracy: number; validation_accuracy: number; validation_roc_auc: number; validation_f1: number; validation_log_loss: number; overfit_gap: number; fit_seconds: number }[];
-  random_forest: { oob_accuracy: number; oob_curve: { n_estimators: number; oob_error: number; validation_error: number }[]; bootstrap_unique_fraction: number; expected_unique_fraction: number; features_per_split: string; n_features: number };
+  comparison: { model: string; label: string; family: string; train_average_precision: number; validation_average_precision: number; validation_roc_auc: number; validation_log_loss: number; overfit_gap: number; fit_seconds: number }[];
+  random_forest: { oob_average_precision: number; oob_curve: { n_estimators: number; oob_average_precision: number; validation_average_precision: number }[]; bootstrap_unique_fraction: number; expected_unique_fraction: number; features_per_split: string; n_features: number };
   gradient_boosting_stages: { stage: number; train_log_loss: number; validation_log_loss: number }[];
   adaboost: { first_estimator_weights: number[]; first_estimator_errors: number[] };
   note: string;
@@ -309,7 +310,7 @@ function EnsembleExp() {
       exp={exp}
       title="Bagging vs. boosting"
       topics={["Random forest", "Bootstrap", "Feature subsampling", "OOB error", "AdaBoost", "Gradient boosting", "XGBoost", "LightGBM"]}
-      estimate="≈ 10–20 s (trains 7 models)"
+      estimate="≈ 30–50 s (trains 7 models)"
       controls={
         <>
           <Slider label="n_estimators" value={Number(exp.params.n_estimators)} min={20} max={500} step={10} onChange={(v) => exp.setParam("n_estimators", v)} />
@@ -325,8 +326,8 @@ function EnsembleExp() {
           <>
             <Card title="Same data, same split, seven models" description={r.protocol}>
               <DataTable
-                columns={["Model", "Family", "Val ROC-AUC", "Val accuracy", "Val F1", "Train acc.", "Overfit gap", "Fit s"]}
-                rows={r.comparison.map((c) => [c.label, c.family, num(c.validation_roc_auc, 4), pct(c.validation_accuracy), num(c.validation_f1, 4), pct(c.train_accuracy), <span className={cn(c.overfit_gap > 0.05 && "text-warning")}>{pct(c.overfit_gap)}</span>, num(c.fit_seconds, 2)])}
+                columns={["Model", "Family", "Val PR-AUC", "Val ROC-AUC", "Val log loss", "Train PR-AUC", "Overfit gap", "Fit s"]}
+                rows={r.comparison.map((c) => [c.label, c.family, num(c.validation_average_precision, 4), num(c.validation_roc_auc, 4), num(c.validation_log_loss, 4), num(c.train_average_precision, 4), <span className={cn(c.overfit_gap > 0.1 && "text-warning")}>{num(c.overfit_gap, 3)}</span>, num(c.fit_seconds, 2)])}
               />
               <div className="mt-4">
                 <Note>{r.note}</Note>
@@ -335,23 +336,23 @@ function EnsembleExp() {
             <div className="grid gap-6 lg:grid-cols-2">
               <Card>
                 <BarsChart
-                  title="Train − validation accuracy gap"
+                  title="Train − validation PR-AUC gap"
                   subtitle="A large gap signals overfitting (single unpruned tree)"
                   data={r.comparison.map((c) => ({ model: modelLabel(c.model).replace("Hist. Gradient Boosting", "HistGB").replace("Gradient Boosting", "GB"), gap: c.overfit_gap }))}
                   x="model"
                   series={[{ key: "gap", name: "Overfit gap" }]}
-                  yFormat={(v) => pct(v, 0)}
+                  yFormat={(v) => num(v, 2)}
                 />
               </Card>
               <Card>
                 <LinesChart
-                  title="Random forest: out-of-bag vs. validation error"
-                  subtitle={`OOB accuracy ${pct(rf.oob_accuracy)} · ${rf.features_per_split} of ${rf.n_features} features per split`}
+                  title="Random forest: out-of-bag vs. validation PR-AUC"
+                  subtitle={`OOB PR-AUC ${num(rf.oob_average_precision, 3)} (enriched training sample, so higher than validation) · ${rf.features_per_split} of ${rf.n_features} features per split`}
                   data={rf.oob_curve}
                   x="n_estimators"
                   xLabel="Trees"
-                  series={[{ key: "oob_error", name: "OOB error" }, { key: "validation_error", name: "Validation error" }]}
-                  yFormat={(v) => pct(v, 1)}
+                  series={[{ key: "oob_average_precision", name: "OOB PR-AUC" }, { key: "validation_average_precision", name: "Validation PR-AUC" }]}
+                  yFormat={(v) => num(v, 2)}
                   footer={`One bootstrap sample contained ${pct(rf.bootstrap_unique_fraction)} unique rows (theory: 1 − 1/e ≈ ${pct(rf.expected_unique_fraction)}); the remaining rows are "out of bag" and act as a built-in validation set.`}
                 />
               </Card>
@@ -390,21 +391,21 @@ interface ImpRes {
   model: string;
   importances: { feature: string; impurity: number; permutation: number; permutation_std: number }[];
   shap: { available: boolean; error?: string; output_space?: string; rows_explained?: number; mean_abs_shap?: { feature: string; value: number }[]; example?: { index: number; actual: number; base_value: number; output_value: number; top_contributions: { feature: string; shap: number; value: number }[] } };
-  limitations: { sgpa_correlation_min: number; sgpa_correlation_max: number; notes: string[] };
+  limitations: { max_abs_correlation_between_pca_components: number; strongest_correlation_with_log_amount: { feature: string; abs_correlation: number }; notes: string[] };
 }
 
 function ImportanceExp() {
-  const exp = useExperiment<ImpRes>("m3", "importance", { model: "xgboost", explain_index: 0 }, { auto: true });
+  const exp = useExperiment<ImpRes>("m3", "importance", { model: "random_forest", explain_index: 0 }, { auto: true });
   return (
     <ExperimentShell
       exp={exp}
       title="Impurity, permutation and SHAP"
       topics={["Impurity importance", "Permutation importance", "SHAP (introductory)", "Limitations"]}
-      estimate="≈ 3–5 s"
+      estimate="≈ 5–15 s"
       controls={
         <>
-          <SelectField label="Model" value={String(exp.params.model)} onChange={(v) => exp.setParam("model", v)} options={["xgboost", "lightgbm", "gradient_boosting", "random_forest"].map((m) => ({ value: m, label: modelLabel(m) }))} />
-          <Slider label="Student to explain (validation row)" value={Number(exp.params.explain_index)} min={0} max={149} step={1} onChange={(v) => exp.setParam("explain_index", v)} />
+          <SelectField label="Model" value={String(exp.params.model)} onChange={(v) => exp.setParam("model", v)} options={["random_forest", "xgboost", "lightgbm", "gradient_boosting"].map((m) => ({ value: m, label: modelLabel(m) }))} />
+          <Slider label="Transaction to explain (validation row)" value={Number(exp.params.explain_index)} min={0} max={149} step={1} onChange={(v) => exp.setParam("explain_index", v)} />
         </>
       }
     >
@@ -414,15 +415,14 @@ function ImportanceExp() {
         const ex = r.shap.example;
         return (
           <>
-            <Card title="Two views of importance" description="Impurity importance is learned from training data; permutation importance is the drop in validation ROC-AUC when one feature is shuffled.">
+            <Card title="Two views of importance" description="Impurity importance is learned from training data; permutation importance is the drop in validation PR-AUC when one raw feature is shuffled (every validation fraud + 4,000 legitimate rows).">
               <BarsChart
                 title="Top 12 features by permutation importance"
                 data={top.map((t) => ({ feature: t.feature, permutation: t.permutation, impurity: t.impurity }))}
                 x="feature"
-                series={[{ key: "permutation", name: "Permutation (ΔROC-AUC)" }, { key: "impurity", name: "Impurity (normalised)" }]}
+                series={[{ key: "permutation", name: "Permutation (ΔPR-AUC)" }, { key: "impurity", name: "Impurity (normalised)" }]}
                 yFormat={(v) => num(v, 3)}
                 height={280}
-                xFormat={(v) => String(v).replace("SGPA_", "").replace("Score", "").replace("Rating", "")}
               />
             </Card>
             {r.shap.available && r.shap.mean_abs_shap && ex ? (
@@ -432,8 +432,8 @@ function ImportanceExp() {
                 </Card>
                 <Card>
                   <HBars
-                    title={`Why validation student #${ex.index} got this score`}
-                    subtitle={`Base value ${num(ex.base_value, 3)} → output ${num(ex.output_value, 3)} (${r.shap.output_space}); actual outcome: ${ex.actual ? "Placed" : "Not placed"}`}
+                    title={`Why validation row #${ex.index} got this score`}
+                    subtitle={`Base value ${num(ex.base_value, 3)} → output ${num(ex.output_value, 3)} (${r.shap.output_space}); actual class: ${ex.actual ? "Fraud" : "Legitimate"}`}
                     data={ex.top_contributions.map((c) => ({ label: c.feature, value: c.shap }))}
                     diverging
                     valueLabel="SHAP contribution"
@@ -449,7 +449,8 @@ function ImportanceExp() {
                   <li key={n}>{n}</li>
                 ))}
                 <li>
-                  In this dataset the eight SGPA columns correlate between {num(r.limitations.sgpa_correlation_min, 2)} and {num(r.limitations.sgpa_correlation_max, 2)}, so their importance is shared and each looks smaller than the group.
+                  Measured here: the largest absolute correlation between two PCA components is {num(r.limitations.max_abs_correlation_between_pca_components, 4)}; the component most correlated with log(1 + Amount) is{" "}
+                  {r.limitations.strongest_correlation_with_log_amount.feature} (|r| = {num(r.limitations.strongest_correlation_with_log_amount.abs_correlation, 3)}).
                 </li>
               </ul>
               <p className="mt-3 text-xs" style={{ color: CHROME.muted }}>

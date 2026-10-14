@@ -1,6 +1,6 @@
 import { MetricGrid } from "../../components/charts/Common";
-import { CHROME, OUTCOME, SERIES } from "../../components/charts/theme";
-import { SelectField, Slider } from "../../components/ui/Fields";
+import { CHROME, CLASS, SERIES } from "../../components/charts/theme";
+import { SelectField, Slider, Toggle } from "../../components/ui/Fields";
 import { num, pct } from "../../lib/format";
 import type { ModuleProps } from "../Lab";
 import { BarsChart, Card, DataTable, ExperimentShell, LinesChart, Note, ScatterGroups, useExperiment } from "./kit";
@@ -13,8 +13,8 @@ export function M4(props: ModuleProps) {
       {...props}
       intro={
         <>
-          Unsupervised methods on standardised numeric features. Labels are never used to fit these models; placement and the dataset's <code className="font-mono text-ink">IsAnomaly</code> flag are only
-          attached afterwards to describe the results. Clusters are exploratory and do not replace the supervised placement model. A clean-looking 2-D picture is not proof that the clusters are real.
+          Unsupervised methods on V1–V28 and log(1 + Amount), standardised. <code className="font-mono text-ink">Class</code> is never used to fit these models; it is attached afterwards
+          to describe the results. Clustering samples over-represent fraud (5 %) so fraud rows are visible at all. A clean-looking 2-D picture is not proof that the clusters are real.
         </>
       }
       experiments={[
@@ -29,7 +29,7 @@ export function M4(props: ModuleProps) {
   );
 }
 
-type Pt = { x: number; y: number; cluster: number; placed: number; point_type?: string };
+type Pt = { x: number; y: number; cluster: number; fraud: number; point_type?: string };
 
 const clusterGroups = (n: number) => Array.from({ length: n }, (_, i) => ({ key: i, label: `Cluster ${i}`, color: SERIES[i] }));
 
@@ -40,13 +40,14 @@ interface KRes {
   k: number;
   elbow: { k: number; inertia: number; silhouette: number | null }[];
   silhouette: number;
-  clusters: { cluster: number; size: number; placed_rate: number; centroid: Record<string, number> }[];
+  centroid_features_shown: string[];
+  clusters: { cluster: number; size: number; fraud_rows: number; fraud_share: number; centroid: Record<string, number> }[];
   projection: Pt[];
   note: string;
 }
 
 function KMeansExp() {
-  const exp = useExperiment<KRes>("m4", "kmeans", { k: 3, sample_size: 3000 }, { auto: true, live: true });
+  const exp = useExperiment<KRes>("m4", "kmeans", { k: 4, sample_size: 3000 }, { auto: true, live: true });
   return (
     <ExperimentShell
       exp={exp}
@@ -63,7 +64,7 @@ function KMeansExp() {
     >
       {(d) => {
         const r = d.result;
-        const keyFeats = ["CGPA", "CodingTestScore", "AptitudeTestScore", "Internships", "AttendancePercent"];
+        const keyFeats = r.centroid_features_shown;
         return (
           <>
             <div className="grid gap-6 lg:grid-cols-2">
@@ -86,8 +87,8 @@ function KMeansExp() {
             </Card>
             <Card title="Cluster profiles (centroids in original units)" description={r.note}>
               <DataTable
-                columns={["Cluster", "Size", "Placed rate", ...keyFeats]}
-                rows={r.clusters.map((c) => [`Cluster ${c.cluster}`, c.size, pct(c.placed_rate), ...keyFeats.map((f) => num(c.centroid[f], 2))])}
+                columns={["Cluster", "Size", "Fraud rows", "Fraud share", ...keyFeats]}
+                rows={r.clusters.map((c) => [`Cluster ${c.cluster}`, c.size, c.fraud_rows, pct(c.fraud_share, 1), ...keyFeats.map((f) => num(c.centroid[f], 2))])}
               />
             </Card>
           </>
@@ -105,7 +106,7 @@ interface HRes {
   comparison: { linkage: string; silhouette: number | null; cophenetic_correlation: number; largest_cluster_fraction: number; cluster_sizes: number[] }[];
   dendrogram: { icoord: number[][]; dcoord: number[][]; leaf_labels: string[]; colors: string[]; cut_height: number };
   projection: Pt[];
-  placed_rate_by_cluster: { cluster: number; size: number; placed_rate: number }[];
+  fraud_by_cluster: { cluster: number; size: number; fraud_rows: number; fraud_share: number }[];
   note: string;
 }
 
@@ -183,6 +184,9 @@ function HierExp() {
               </Card>
               <Card>
                 <ScatterGroups title="Clusters in PCA space" points={r.projection.map((p) => ({ x: p.x, y: p.y, g: p.cluster }))} groups={clusterGroups(r.n_clusters)} xLabel="PC1" yLabel="PC2" height={280} />
+                <div className="mt-4">
+                  <DataTable columns={["Cluster", "Size", "Fraud rows", "Fraud share"]} rows={r.fraud_by_cluster.map((c) => [`Cluster ${c.cluster}`, c.size, c.fraud_rows, pct(c.fraud_share, 1)])} />
+                </div>
               </Card>
             </div>
           </>
@@ -200,9 +204,10 @@ interface DRes {
   n_core: number;
   n_border: number;
   n_noise: number;
-  noise_placed_rate: number | null;
+  noise_fraud_share: number | null;
+  share_of_fraud_in_noise: number;
   silhouette_excluding_noise: number | null;
-  clusters: { cluster: number; size: number; placed_rate: number }[];
+  clusters: { cluster: number; size: number; fraud_rows: number; fraud_share: number }[];
   k_distance: { rank: number; distance: number }[];
   k_distance_hint: number;
   projection: Pt[];
@@ -210,7 +215,7 @@ interface DRes {
 }
 
 function DbscanExp() {
-  const exp = useExperiment<DRes>("m4", "dbscan", { eps: 1.8, min_samples: 10, sample_size: 2500 }, { auto: true, live: true });
+  const exp = useExperiment<DRes>("m4", "dbscan", { eps: 4, min_samples: 10, sample_size: 2500 }, { auto: true, live: true });
   return (
     <ExperimentShell
       exp={exp}
@@ -220,7 +225,7 @@ function DbscanExp() {
       estimate="< 1 s"
       controls={
         <>
-          <Slider label="eps (neighbourhood radius)" value={Number(exp.params.eps)} min={0.4} max={5} step={0.1} onChange={(v) => exp.setParam("eps", v)} format={(v) => v.toFixed(1)} />
+          <Slider label="eps (neighbourhood radius)" value={Number(exp.params.eps)} min={0.5} max={12} step={0.25} onChange={(v) => exp.setParam("eps", v)} format={(v) => v.toFixed(1)} />
           <Slider label="min_samples" value={Number(exp.params.min_samples)} min={2} max={40} step={1} onChange={(v) => exp.setParam("min_samples", v)} />
         </>
       }
@@ -236,7 +241,8 @@ function DbscanExp() {
                   { label: "Clusters found", value: String(r.n_clusters) },
                   { label: "Core points", value: r.n_core.toLocaleString(), hint: pct(r.n_core / total) },
                   { label: "Border points", value: r.n_border.toLocaleString(), hint: pct(r.n_border / total) },
-                  { label: "Noise points", value: r.n_noise.toLocaleString(), hint: r.noise_placed_rate != null ? `${pct(r.noise_placed_rate)} placed` : undefined },
+                  { label: "Noise points", value: r.n_noise.toLocaleString(), hint: r.noise_fraud_share != null ? `${pct(r.noise_fraud_share, 1)} of noise is fraud` : undefined },
+                  { label: "Fraud in noise", value: pct(r.share_of_fraud_in_noise, 1), hint: "of all fraud rows in the sample" },
                   { label: "Silhouette (no noise)", value: num(r.silhouette_excluding_noise, 3) },
                 ]}
               />
@@ -271,7 +277,7 @@ function DbscanExp() {
               </Card>
             </div>
             <Card title="Clusters" description={r.note}>
-              {r.clusters.length ? <DataTable columns={["Cluster", "Size", "Placed rate"]} rows={r.clusters.map((c) => [`Cluster ${c.cluster}`, c.size, pct(c.placed_rate)])} /> : <Note tone="warn">No clusters at these settings: every point is noise. Increase eps or lower min_samples.</Note>}
+              {r.clusters.length ? <DataTable columns={["Cluster", "Size", "Fraud rows", "Fraud share"]} rows={r.clusters.map((c) => [`Cluster ${c.cluster}`, c.size, c.fraud_rows, pct(c.fraud_share, 1)])} /> : <Note tone="warn">No clusters at these settings: every point is noise. Increase eps or lower min_samples.</Note>}
             </Card>
           </>
         );
@@ -288,13 +294,23 @@ interface PcaRes {
   components_for_90: number;
   components_for_95: number;
   loadings: { feature: string; pc1: number; pc2: number }[];
-  projection: { x: number; y: number; placed: number }[];
+  largest_raw_variances: { feature: string; variance: number }[];
+  standardized: boolean;
+  projection: { x: number; y: number; fraud: number }[];
+  note: string;
 }
 
 function PcaExp() {
-  const exp = useExperiment<PcaRes>("m4", "pca", { sample_size: 20000 }, { auto: true });
+  const exp = useExperiment<PcaRes>("m4", "pca", { sample_size: 20000, standardize: true }, { auto: true, live: true });
   return (
-    <ExperimentShell exp={exp} title="Principal component analysis" topics={["PCA", "Explained variance", "Cumulative variance", "Loadings", "Projection"]} estimate="< 1 s">
+    <ExperimentShell
+      exp={exp}
+      live
+      title="Principal component analysis"
+      topics={["PCA", "Explained variance", "Cumulative variance", "Loadings", "Standardisation"]}
+      estimate="< 1 s"
+      controls={<Toggle label="Standardise inputs first" checked={!!exp.params.standardize} onChange={(v) => exp.setParam("standardize", v)} hint="V1–V28 are already PCA outputs" />}
+    >
       {(d) => {
         const r = d.result;
         return (
@@ -325,18 +341,21 @@ function PcaExp() {
               </Card>
               <Card>
                 <ScatterGroups
-                  title="Students on PC1 vs. PC2"
-                  subtitle="Coloured by placement after fitting; PCA itself never sees the label"
-                  points={r.projection.map((p) => ({ x: p.x, y: p.y, g: p.placed }))}
-                  groups={[{ key: 1, label: "Placed", color: OUTCOME.placed }, { key: 0, label: "Not placed", color: OUTCOME.notPlaced }]}
+                  title="Transactions on PC1 vs. PC2"
+                  subtitle="Coloured by Class after fitting; PCA itself never sees the label (all fraud rows drawn)"
+                  points={r.projection.map((p) => ({ x: p.x, y: p.y, g: p.fraud }))}
+                  groups={[{ key: 0, label: "Legitimate", color: CLASS.legitimate }, { key: 1, label: "Fraud", color: CLASS.fraud }]}
                   xLabel="PC1"
                   yLabel="PC2"
                   height={280}
                 />
               </Card>
             </div>
-            <Card title="Loadings (weight of each standardised feature)">
+            <Card title={`Loadings (${r.standardized ? "standardised" : "raw"} inputs)`} description={`Largest raw variances: ${r.largest_raw_variances.map((v) => `${v.feature} ${num(v.variance, 2)}`).join(", ")}.`}>
               <DataTable columns={["Feature", "PC1", "PC2"]} rows={r.loadings.map((l) => [l.feature, num(l.pc1, 3), num(l.pc2, 3)])} />
+              <div className="mt-4">
+                <Note>{r.note}</Note>
+              </div>
             </Card>
           </>
         );
@@ -353,7 +372,7 @@ interface EmbRes {
   seconds: number;
   trustworthiness: number;
   umap_available: boolean;
-  points: { x: number; y: number; placed: number; tier: string }[];
+  points: { x: number; y: number; fraud: number }[];
   note: string;
 }
 
@@ -383,10 +402,10 @@ function EmbedExp() {
           <>
             <Card>
               <ScatterGroups
-                title={`${r.method === "tsne" ? "t-SNE" : "UMAP"} embedding of ${r.points.length.toLocaleString()} students`}
+                title={`${r.method === "tsne" ? "t-SNE" : "UMAP"} embedding of ${r.points.length.toLocaleString()} transactions`}
                 subtitle={`Trustworthiness ${num(r.trustworthiness, 3)} (1 = local neighbourhoods fully preserved) · ${num(r.seconds, 1)} s`}
-                points={r.points.map((p) => ({ x: p.x, y: p.y, g: p.placed }))}
-                groups={[{ key: 1, label: "Placed", color: OUTCOME.placed }, { key: 0, label: "Not placed", color: OUTCOME.notPlaced }]}
+                points={r.points.map((p) => ({ x: p.x, y: p.y, g: p.fraud }))}
+                groups={[{ key: 0, label: "Legitimate", color: CLASS.legitimate }, { key: 1, label: "Fraud (5 % of sample)", color: CLASS.fraud }]}
                 xLabel="dim 1"
                 yLabel="dim 2"
                 height={380}
@@ -408,33 +427,34 @@ interface DetRes {
   recall: number;
   f1: number;
   roc_auc_of_score: number;
-  score_histogram: { score: number; normal: number; labelled_anomaly: number }[];
+  average_precision_of_score: number;
+  score_histogram: { score: number; legitimate: number; fraud: number }[];
   seconds: number;
   train_rows?: number;
 }
 interface AnomRes {
   params: { contamination: number; nu: number };
-  labelled_anomaly_rate_validation: number;
+  fraud_rate_validation: number;
   isolation_forest: DetRes;
   one_class_svm: DetRes;
-  labelled_profile: Record<string, Record<string, number>>;
+  class_profile: Record<string, Record<string, number>>;
   autoencoder: string;
   note: string;
 }
 
 function AnomalyExp() {
-  const exp = useExperiment<AnomRes>("m4", "anomaly", { contamination: 0.035, nu: 0.035 }, { auto: true, live: true });
+  const exp = useExperiment<AnomRes>("m4", "anomaly", { contamination: 0.002, nu: 0.002 }, { auto: true, live: true });
   return (
     <ExperimentShell
       exp={exp}
       live
       title="Anomaly detection"
       topics={["Isolation Forest", "One-Class SVM", "Contamination", "Autoencoder (conceptual)"]}
-      estimate="≈ 1–2 s"
+      estimate="≈ 3–6 s"
       controls={
         <>
-          <Slider label="Isolation Forest contamination" value={Number(exp.params.contamination)} min={0.005} max={0.2} step={0.005} onChange={(v) => exp.setParam("contamination", v)} format={(v) => pct(v, 1)} />
-          <Slider label="One-Class SVM ν" value={Number(exp.params.nu)} min={0.005} max={0.3} step={0.005} onChange={(v) => exp.setParam("nu", v)} format={(v) => v.toFixed(3)} />
+          <Slider label="Isolation Forest contamination" value={Number(exp.params.contamination)} min={0.0005} max={0.05} step={0.0005} onChange={(v) => exp.setParam("contamination", v)} format={(v) => pct(v, 1)} />
+          <Slider label="One-Class SVM ν" value={Number(exp.params.nu)} min={0.0005} max={0.05} step={0.0005} onChange={(v) => exp.setParam("nu", v)} format={(v) => v.toFixed(3)} />
         </>
       }
     >
@@ -446,27 +466,30 @@ function AnomalyExp() {
         ];
         return (
           <>
-            <Card title="Detectors scored against the dataset's IsAnomaly flag (validation split)" description={`Labelled anomaly rate: ${pct(r.labelled_anomaly_rate_validation, 2)}. ROC-AUC uses the continuous anomaly score; precision/recall use the flagged rows.`}>
-              <DataTable columns={["Detector", "Flagged", "Precision", "Recall", "F1", "Score ROC-AUC", "Seconds"]} rows={dets.map(({ name, r: x }) => [name, x.flagged, num(x.precision, 3), num(x.recall, 3), num(x.f1, 3), num(x.roc_auc_of_score, 3), num(x.seconds, 2)])} />
+            <Card title="Detectors scored against Class (validation split)" description={`Fraud rate: ${pct(r.fraud_rate_validation, 3)}. PR-AUC and ROC-AUC use the continuous anomaly score; precision/recall use the flagged rows. Labels were not used for fitting.`}>
+              <DataTable
+                columns={["Detector", "Flagged", "Precision", "Recall", "F1", "Score PR-AUC", "Score ROC-AUC", "Seconds"]}
+                rows={dets.map(({ name, r: x }) => [name, x.flagged, num(x.precision, 3), num(x.recall, 3), num(x.f1, 3), num(x.average_precision_of_score, 3), num(x.roc_auc_of_score, 3), num(x.seconds, 2)])}
+              />
             </Card>
             <div className="grid gap-6 lg:grid-cols-2">
               {dets.map(({ name, r: x }) => (
                 <Card key={name}>
                   <BarsChart
                     title={`${name.split(" (")[0]}: anomaly score distribution`}
-                    subtitle="Higher score = more anomalous"
+                    subtitle="Higher score = more anomalous. Fraud is a sliver at this scale; use the table view for exact counts."
                     data={x.score_histogram}
                     x="score"
                     xFormat={(v) => num(Number(v), 2)}
-                    series={[{ key: "normal", name: "Normal rows" }, { key: "labelled_anomaly", name: "Labelled anomalies" }]}
+                    series={[{ key: "legitimate", name: "Legitimate", color: CLASS.legitimate }, { key: "fraud", name: "Fraud", color: CLASS.fraud }]}
                     yFormat={(v) => String(Math.round(v))}
                     stacked
                   />
                 </Card>
               ))}
             </div>
-            <Card title="What the labelled anomalies look like (validation means)">
-              <DataTable columns={["IsAnomaly", ...Object.keys(r.labelled_profile["0"] ?? {})]} rows={Object.entries(r.labelled_profile).map(([k, row]) => [k === "1" ? "1 (anomaly)" : "0 (normal)", ...Object.values(row).map((v) => num(v, 2))])} />
+            <Card title="How fraud differs on a few inputs (validation means)">
+              <DataTable columns={["Class", ...Object.keys(Object.values(r.class_profile)[0] ?? {})]} rows={Object.entries(r.class_profile).map(([k, row]) => [k, ...Object.values(row).map((v) => num(v, 3))])} />
               <div className="mt-4 space-y-3">
                 <Note>{r.autoencoder}</Note>
                 <Note tone="warn">{r.note}</Note>

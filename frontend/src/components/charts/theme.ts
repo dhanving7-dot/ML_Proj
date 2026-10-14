@@ -6,8 +6,14 @@
  */
 export const SERIES = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"] as const;
 
-/** Binary outcome encoding used everywhere: Placed = slot 1 (blue), Not placed = slot 2 (orange). */
-export const OUTCOME = { placed: SERIES[0], notPlaced: SERIES[1] } as const;
+/** Class encoding used everywhere: Legitimate = slot 1 (blue), Fraud = slot 2 (orange). */
+export const CLASS = { legitimate: SERIES[0], fraud: SERIES[1] } as const;
+
+/** Decision encoding (always paired with the decision name, never colour alone). */
+export const DECISION_COLOR = { LOW_RISK: "#3987e5", REVIEW: "#c98500", HIGH_RISK: "#d03b3b" } as const;
+
+/** Model components: LR = slot 1, Isolation Forest = slot 3 (green), hybrid = slot 7 (violet). */
+export const COMPONENT = { logistic_regression: SERIES[0], isolation_forest: SERIES[2], hybrid: SERIES[6] } as const;
 
 export const CHROME = {
   grid: "rgba(255,255,255,0.06)",

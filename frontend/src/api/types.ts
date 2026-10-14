@@ -1,48 +1,56 @@
 /* Typed mirrors of the FastAPI responses (backend/app). Keep in sync with the backend schemas. */
 
-export type FeatureGroup = "profile" | "academic" | "assessment" | "experience";
+export type FeatureGroup = "time" | "amount" | "pca";
+export type Decision = "LOW_RISK" | "REVIEW" | "HIGH_RISK";
+export const DECISIONS: Decision[] = ["LOW_RISK", "REVIEW", "HIGH_RISK"];
 
-export interface NumericFieldSchema {
+export interface FieldSchema {
   name: string;
   kind: "numeric";
   group: FeatureGroup;
   description: string;
-  minimum: number;
-  maximum: number;
+  minimum: number | null;
+  maximum: number | null;
+  unit: string | null;
   integer: boolean;
   nullable: boolean;
-  unit: string | null;
 }
-
-export interface CategoricalFieldSchema {
-  name: string;
-  kind: "nominal" | "ordinal";
-  group: FeatureGroup;
-  description: string;
-  categories: string[];
-  nullable: boolean;
-}
-
-export type FieldSchema = NumericFieldSchema | CategoricalFieldSchema;
 
 export interface SchemaResponse {
   request_fields: FieldSchema[];
   model_features: string[];
-  feature_set: string;
-  engineered_features: string[];
+  metadata_fields: string[];
+  transformed_features: string[];
+  feature_ranges: Record<string, [number, number]> | null;
   excluded_columns: Record<string, string>;
   target: string;
   class_labels: Record<string, string>;
-  available_classifiers: string[];
+  decisions: Decision[];
+  time_encodings: string[];
+  amount_transforms: string[];
 }
 
-export type StudentInput = Record<string, string | number | null>;
+/** 30 model features plus the optional transaction_id. */
+export type TransactionInput = Record<string, number | string | null>;
+
+export interface Policy {
+  fusion_weight_lr: number;
+  fusion_weight_if: number;
+  review_threshold: number;
+  high_risk_threshold: number;
+  lr_threshold: number;
+  if_flag_percentile: number;
+  if_review_percentile: number | null;
+}
 
 export interface ConsistencyCheck {
   passed: boolean;
   examples?: number;
-  max_probability_diff?: number;
   max_feature_vector_diff?: number;
+  max_lr_probability_diff?: number;
+  max_anomaly_score_diff?: number;
+  max_hybrid_score_diff?: number;
+  decision_mismatches?: number;
   checked_at?: string;
   reason?: string;
 }
@@ -56,8 +64,40 @@ export interface Health {
   model_loaded: boolean;
   model_version: string | null;
   model_type: string | null;
+  policy: Policy | null;
   consistency_check: ConsistencyCheck | null;
   message: string | null;
+}
+
+export interface Scores {
+  lr_probability: number;
+  anomaly_score: number;
+  anomaly_percentile: number;
+  lr_rarity: number;
+  if_rarity: number;
+  hybrid_score: number;
+}
+
+export interface Contribution {
+  feature: string;
+  label: string;
+  standardised_value: number;
+  coefficient: number;
+  contribution: number;
+}
+
+export interface Explanation {
+  lr_top_contributions: Contribution[];
+  lr_intercept: number;
+  lr_prior_correction: number;
+  lr_logit: number;
+  hybrid_components: { lr: number; isolation_forest: number };
+  lr_exceedance: number;
+  if_exceedance: number;
+  anomaly_review_trigger: boolean;
+  out_of_training_range: string[];
+  lr_rarity?: number;
+  if_rarity?: number;
 }
 
 export interface PredictionResponse {
@@ -65,29 +105,33 @@ export interface PredictionResponse {
   created_at: string;
   model_version: string;
   model_type: string;
-  prediction: 0 | 1;
-  label: string;
-  probability: number;
-  threshold: number;
+  transaction_id: string | null;
+  decision: Decision;
+  scores: Scores;
+  flags: { logistic_regression: boolean; isolation_forest: boolean };
+  policy: Policy;
+  explanation: Explanation;
+  out_of_training_range: string[];
   latency_ms: number;
   timings: Record<string, number>;
-  imputed_fields: string[];
   disclaimer: string;
 }
 
 export interface BatchItem {
   index: number;
   request_id: string;
-  prediction: 0 | 1;
-  label: string;
-  probability: number;
+  transaction_id: string | null;
+  decision: Decision;
+  hybrid_score: number;
+  lr_probability: number;
+  anomaly_percentile: number;
 }
 
 export interface BatchResponse {
   batch_id: string;
   model_version: string;
   count: number;
-  placed_count: number;
+  decision_counts: Record<Decision, number>;
   latency_ms: number;
   results: BatchItem[];
   errors: { index: number; errors: { field: string; message: string }[] }[];
@@ -97,47 +141,108 @@ export interface BatchResponse {
 export interface PredictionRow {
   request_id: string;
   batch_id: string | null;
+  transaction_id: string | null;
   source: "online" | "batch" | "replay";
   created_at: string;
   model_version: string;
-  prediction: 0 | 1;
-  label: string;
-  probability: number;
-  threshold: number;
+  decision: Decision;
+  hybrid_score: number;
+  lr_probability: number;
+  anomaly_score: number;
+  anomaly_percentile: number;
+  lr_flag: boolean;
+  if_flag: boolean;
+  amount: number;
+  time_s: number;
+  out_of_range: string[];
   latency_ms: number;
   actual_outcome: 0 | 1 | null;
   outcome_recorded_at: string | null;
-  summary: Record<string, string | number | null>;
 }
 
 export interface PredictionTrace extends PredictionRow {
-  inputs: StudentInput;
+  inputs: Record<string, number>;
   feature_vector: number[];
   feature_names: string[];
-  imputed_fields: string[];
+  feature_labels: string[];
+  policy: Policy;
+  explanation: Explanation;
   timings: Record<string, number>;
   trace: { step: string; detail: string; ms?: number | null }[];
 }
 
+export interface PredictionPage {
+  total: number;
+  limit: number;
+  offset: number;
+  decision_counts: Record<Decision, number>;
+  items: PredictionRow[];
+}
+
+export interface PredictionQuery {
+  limit?: number;
+  offset?: number;
+  source?: string;
+  decision?: Decision[];
+  model_version?: string;
+  q?: string;
+  min_score?: number;
+  max_score?: number;
+  min_amount?: number;
+  max_amount?: number;
+  labelled?: boolean;
+  outcome?: 0 | 1;
+  sort?: "newest" | "oldest" | "score_desc" | "score_asc" | "amount_desc";
+}
+
 export interface SampleRow {
-  student_id: number;
-  features: StudentInput;
-  actual_outcome: 0 | 1;
+  row_id: string;
+  features: Record<string, number>;
+  actual_class: 0 | 1;
 }
 
 export interface ClassMetrics {
   threshold: number;
-  accuracy: number;
   precision: number;
   recall: number;
   f1: number;
-  specificity?: number;
+  fraud_detection_rate: number;
+  specificity: number;
+  false_positive_rate: number;
+  accuracy: number;
+  balanced_accuracy: number;
   roc_auc: number | null;
   average_precision: number | null;
-  log_loss: number;
-  brier: number;
   confusion_matrix: { tn: number; fp: number; fn: number; tp: number };
+  false_positives: number;
+  false_negatives: number;
+  alerts: number;
+  alert_rate: number;
   support: number;
+  positives: number;
+  positive_rate: number;
+  log_loss?: number;
+  brier?: number;
+}
+
+export interface DecisionRow {
+  decision: Decision;
+  transactions: number;
+  fraud: number;
+  legitimate: number;
+  share_of_transactions: number;
+  share_of_all_fraud: number;
+  fraud_rate_in_band: number | null;
+}
+
+export type ComponentKey = "logistic_regression" | "isolation_forest" | "hybrid_high_risk" | "hybrid_review_or_high";
+
+export interface EvaluationBlock {
+  logistic_regression: ClassMetrics;
+  isolation_forest: ClassMetrics;
+  hybrid_high_risk: ClassMetrics;
+  hybrid_review_or_high: ClassMetrics;
+  decisions: DecisionRow[];
 }
 
 export interface MonitoringEvent {
@@ -149,37 +254,53 @@ export interface MonitoringEvent {
   details?: Record<string, unknown> | null;
 }
 
+export interface DashboardRow {
+  request_id: string;
+  created_at: string;
+  source: string;
+  transaction_id: string | null;
+  decision: Decision;
+  hybrid_score: number;
+  lr_probability: number;
+  anomaly_percentile: number;
+  amount: number;
+  model_version: string;
+  actual_outcome: 0 | 1 | null;
+}
+
+export type HeadlineMetrics = Pick<ClassMetrics, "precision" | "recall" | "f1" | "average_precision" | "roc_auc" | "false_positives" | "false_negatives" | "alert_rate">;
+
 export interface Dashboard {
   generated_at: string;
   predictions: {
     total: number;
     last_24h: number;
-    placed: number;
-    placed_rate: number | null;
-    mean_probability: number | null;
+    by_decision: Record<Decision, number>;
+    by_source: Record<string, number>;
+    flagged: number;
+    flagged_rate: number | null;
+    high_risk_rate: number | null;
+    open_review: number;
+    open_high_risk: number;
     labelled: number;
-    live_accuracy: number | null;
-    trend: { date: string; predictions: number; placed: number }[];
-    probability_histogram: { bin: string; count: number }[];
+    confirmed_fraud: number;
+    confirmed_fraud_flagged: number;
+    trend: ({ date: string } & Record<Decision, number>)[];
+    hybrid_histogram: { bin: string; count: number }[];
   };
-  operations: {
-    requests_24h: number;
-    server_errors_24h: number;
-    error_rate_24h: number | null;
-    predict_latency_p50_ms: number | null;
-  };
+  operations: { requests_24h: number; server_errors_24h: number; error_rate_24h: number | null; predict_latency_p50_ms: number | null };
   model: null | {
     version: string;
     type: string;
     label: string;
-    threshold: number;
-    feature_set: string;
+    policy: Policy;
     loaded_at: string;
     trained_at: string | null;
-    test_metrics: { accuracy: number; precision: number; recall: number; f1: number; roc_auc: number; brier: number };
+    test_metrics: Record<ComponentKey, HeadlineMetrics>;
+    test_decisions: DecisionRow[];
     test_support: number;
+    test_fraud_rows: number;
     consistency: ConsistencyCheck;
-    cv_results: { model: string; label: string; roc_auc: number; roc_auc_std: number; f1: number }[];
   };
   models_registered: number;
   training: {
@@ -187,22 +308,9 @@ export interface Dashboard {
     job_running: boolean;
     last: null | { job_id: string; status: string; decision: string | null; reason: string | null; finished_at: string | null; new_version: string | null };
   };
-  monitoring: {
-    last_drift_check: null | { ts: string; severity: string; message: string };
-    recent_events: MonitoringEvent[];
-  };
-  recent_predictions: {
-    request_id: string;
-    created_at: string;
-    source: string;
-    label: string;
-    prediction: 0 | 1;
-    probability: number;
-    model_version: string;
-    cgpa: number | null;
-    stream: string | null;
-    tier: string | null;
-  }[];
+  monitoring: { last_drift_check: null | { ts: string; severity: string; message: string }; recent_events: MonitoringEvent[] };
+  recent_alerts: DashboardRow[];
+  recent_predictions: DashboardRow[];
 }
 
 export type StageStatus = "complete" | "attention" | "pending";
@@ -219,7 +327,7 @@ export interface Lifecycle {
   stages: LifecycleStage[];
   last_prediction_request_id: string | null;
   tooling: {
-    mlflow: { installed_version: string | null; enabled: boolean; tracking_uri: string; runs_logged: number; last_error: string | null };
+    mlflow: { installed_version: string | null; enabled: boolean; tracking_uri: string; experiment: string; runs_logged: number; last_error: string | null };
     dvc: { installed_version: string | null; repo_initialised: boolean; dataset_tracked: boolean; pipeline_defined: boolean; lock_file: boolean };
     scikit_learn: string | null;
     optional: Record<string, string | null>;
@@ -230,23 +338,28 @@ export interface Lifecycle {
 export interface MonitoringSummary {
   window_hours: number;
   generated_at: string;
-  requests: {
-    total: number;
-    server_errors: number;
-    client_errors: number;
-    error_rate: number | null;
-    client_error_rate: number | null;
-    throughput_per_min: number;
-  };
+  requests: { total: number; server_errors: number; client_errors: number; error_rate: number | null; client_error_rate: number | null; throughput_per_min: number };
   latency_ms: { predict_p50: number | null; predict_p95: number | null; predict_p99: number | null; predict_requests: number };
   predictions: {
     total: number;
-    placed_rate: number | null;
-    mean_probability: number | null;
+    by_decision: Record<Decision, number>;
+    flagged_rate: number | null;
+    high_risk_rate: number | null;
+    mean_hybrid_score: number | null;
     by_source: Record<string, number>;
-    probability_histogram: { bin: string; count: number }[];
+    histograms: Record<"hybrid_score" | "lr_probability" | "anomaly_percentile", { bin: string; count: number }[]>;
   };
-  series: { t: string; requests: number; predict_requests: number; errors: number; client_errors: number; mean_latency_ms: number | null }[];
+  series: {
+    t: string;
+    requests: number;
+    predict_requests: number;
+    errors: number;
+    client_errors: number;
+    mean_latency_ms: number | null;
+    low_risk: number;
+    review: number;
+    high_risk: number;
+  }[];
 }
 
 export type DriftStatus = "stable" | "investigate" | "significant_shift" | "insufficient_data" | "no_model";
@@ -265,7 +378,6 @@ export interface DriftFeatureDetail {
   n: number;
   bins?: DriftBin[];
   summary?: Record<string, number | null>;
-  unseen_categories?: string[];
 }
 
 export interface DriftReport {
@@ -278,7 +390,7 @@ export interface DriftReport {
   from?: string;
   to?: string;
   features?: { feature: string; psi: number | null; kl_divergence: number | null; status: DriftStatus; kind: string }[];
-  prediction?: { psi: number | null; kl_divergence: number | null; status: DriftStatus; bins: DriftBin[] } | null;
+  scores?: Record<string, { psi: number | null; kl_divergence: number | null; status: DriftStatus; bins: DriftBin[]; summary?: Record<string, number | null> }>;
   detail?: Record<string, DriftFeatureDetail>;
   flagged_features?: string[];
   thresholds?: { stable_below: number; significant_at_or_above: number };
@@ -290,39 +402,14 @@ export interface Performance {
   total_predictions: number;
   min_labelled: number;
   model_version?: string;
-  offline_test?: { accuracy: number; f1: number; roc_auc: number; precision: number; recall: number };
+  offline_test?: { high_risk_precision: number; high_risk_recall: number; review_or_high_recall: number; average_precision: number };
   labelled_active_model: number;
   status: "insufficient_labels" | "healthy" | "degraded";
   message?: string;
-  live?: ClassMetrics;
-  accuracy_drop_vs_test?: number | null;
-  blocks?: { block: number; rows: number; accuracy: number }[];
+  live?: { high_risk: ClassMetrics; review_or_high: ClassMetrics; ranking: { average_precision: number | null; roc_auc: number | null } };
+  recall_drop_vs_test?: number | null;
+  blocks?: { block: number; rows: number; frauds: number; recall_review_or_high: number | null; precision_review_or_high: number | null }[];
   interpretation?: string;
-}
-
-export interface CvResult {
-  model: string;
-  label: string;
-  roc_auc: { mean: number; std: number; folds: number[] };
-  f1: { mean: number; std: number; folds: number[] };
-  accuracy: { mean: number; std: number; folds: number[] };
-  neg_log_loss: { mean: number; std: number; folds: number[] };
-  fit_time_s: number;
-}
-
-export interface ModelSummary {
-  version: string;
-  model_type: string;
-  status: "active" | "archived";
-  created_at: string;
-  activated_at: string | null;
-  feature_set: string;
-  threshold: number;
-  sha256: string;
-  size_bytes: number;
-  dataset_id: number | null;
-  mlflow_run_id: string | null;
-  metrics: { validation: Partial<ClassMetrics>; test: Partial<ClassMetrics>; cv: CvResult | null };
 }
 
 export interface CurvePointROC {
@@ -336,63 +423,173 @@ export interface CurvePointPR {
   threshold: number;
 }
 export interface CalibrationResult {
-  points: { mean_predicted: number; fraction_positive: number }[];
+  points: { mean_predicted: number; fraction_positive: number; count?: number }[];
   histogram: { bin_start: number; count: number }[];
   ece: number;
   brier: number;
+  mean_predicted?: number;
+  observed_rate?: number;
 }
 export interface SweepPoint {
   threshold: number;
   precision: number;
   recall: number;
   f1: number;
-  accuracy: number;
-  predicted_positive_rate: number;
+  alert_rate: number;
+  alerts: number;
+  false_positives: number;
+  accuracy?: number;
+  predicted_positive_rate?: number;
+}
+
+export interface LrCvResult {
+  C: number;
+  average_precision: { mean: number; std: number; folds: number[] };
+  roc_auc: { mean: number; std: number; folds: number[] };
+  fit_time_s: number;
+}
+
+export type HeadlineBlock = Record<ComponentKey, Partial<ClassMetrics>> & { decisions?: DecisionRow[] };
+
+export interface ModelSummary {
+  version: string;
+  model_type: string;
+  status: "active" | "candidate" | "archived";
+  created_at: string;
+  activated_at: string | null;
+  feature_set: string;
+  threshold: number;
+  policy: Policy;
+  sha256: string;
+  size_bytes: number;
+  dataset_id: number | null;
+  mlflow_run_id: string | null;
+  metrics: { validation: HeadlineBlock; test: HeadlineBlock; cv: LrCvResult | null; policy: Policy };
+}
+
+export interface SplitsInfo {
+  strategy: string;
+  seed: number;
+  fractions: Record<string, number>;
+  train: { rows: number; fraud_rows: number; positive_rate: number };
+  validation: { rows: number; fraud_rows: number; positive_rate: number };
+  test: { rows: number; fraud_rows: number; positive_rate: number };
+  cleaning: Record<string, number | string>;
+  usage: Record<string, string>;
+}
+
+export interface Tuning {
+  weight_source: string;
+  lr_threshold_rule: string;
+  high_risk_rule: string;
+  review_rule: string;
+  review_binding_constraint: string;
+  if_flag_rule: string;
+  if_review_trigger: string;
+  notes: string[];
+}
+
+export interface Curves {
+  test_pr: Record<"logistic_regression" | "isolation_forest" | "hybrid", CurvePointPR[]>;
+  test_roc: Record<"logistic_regression" | "isolation_forest" | "hybrid", CurvePointROC[]>;
+  validation_threshold_sweep: Record<"hybrid" | "logistic_regression", SweepPoint[]>;
+  fusion_weight: { weight_lr: number; average_precision: number; roc_auc: number }[];
+}
+
+export interface CalibrationInfo {
+  method: string;
+  logit_offset: number;
+  validation: CalibrationResult;
+  validation_without_correction: CalibrationResult;
+  test: CalibrationResult;
+}
+
+export interface ModelMetadata {
+  model_type: string;
+  model_label: string;
+  task: string;
+  components: {
+    logistic_regression: { C: number; imbalance: string; class_weight: string | null; training_rows: number; training_fraud_rows: number; intercept: number; prior_correction_offset: number };
+    isolation_forest: { reference: string; fit_rows: number; labels_used_for_fitting: boolean; params: Record<string, unknown>; anomaly_score: string };
+    references: Record<string, { n: number; quantiles: Record<string, number> }>;
+  };
+  policy: Policy;
+  tuning: Tuning;
+  normalisation: string;
+  fusion_formula: string;
+  decision_rules: Record<Decision, string>;
+  config: Record<string, unknown>;
+  feature_set: string;
+  features: string[];
+  transformed_features: string[];
+  feature_ranges: Record<string, [number, number]>;
+  excluded_columns: Record<string, string>;
+  splits: SplitsInfo;
+  model_selection: { protocol: string; metric: string; selected_C: number; results: LrCvResult[] };
+  metrics: { validation: EvaluationBlock; test: EvaluationBlock };
+  calibration: CalibrationInfo;
+  curves: Curves;
+  feature_importance: {
+    lr_coefficients: { feature: string; label: string; coefficient: number }[];
+    lr_permutation_validation_ap: { feature: string; importance: number; std: number }[];
+  };
+  data_validation: ValidationReport;
+  dataset?: { id: number; name: string; sha256: string; rows: number };
+  artifact_sha256: string;
+  library_versions: Record<string, string>;
+  timings: Record<string, number>;
 }
 
 export interface ModelDetail extends ModelSummary {
-  metadata: {
-    model_type: string;
-    model_label: string;
-    task: string;
-    features: string[];
-    engineered_features: string[];
-    transformed_features: string[];
-    excluded_columns: Record<string, string>;
-    threshold: number;
-    calibration: { method: string; rows: Record<string, number> };
-    config: Record<string, unknown>;
-    splits: {
-      strategy: string;
-      seed: number;
-      fractions: Record<string, number>;
-      train: { rows: number; positive_rate: number };
-      validation: { rows: number; positive_rate: number };
-      test: { rows: number; positive_rate: number };
-      usage: Record<string, string>;
-    };
-    model_selection: { protocol: string; metric: string; selected: string; results: CvResult[] };
-    metrics: { validation: ClassMetrics; test: ClassMetrics; test_at_0_5: ClassMetrics; validation_uncalibrated_roc_auc: number };
-    curves: {
-      test_roc: CurvePointROC[];
-      test_pr: CurvePointPR[];
-      test_calibration: CalibrationResult;
-      validation_calibration_uncalibrated: CalibrationResult;
-      validation_threshold_sweep: SweepPoint[];
-    };
-    feature_importance: {
-      permutation_validation_roc_auc: { feature: string; importance: number; std: number }[];
-      impurity_top30: { feature: string; importance: number }[] | null;
-    };
-    data_validation: ValidationReport;
-    dataset?: { id: number; name: string; sha256: string; rows: number };
-    artifact_sha256: string;
-    library_versions: Record<string, string>;
-    timings: Record<string, number>;
-    candidates_skipped: string[];
-  };
+  metadata: ModelMetadata;
   reference_features: string[];
   consistency: ConsistencyCheck | null;
+}
+
+export interface IntegrityReport {
+  version: string;
+  exists: boolean;
+  matches: boolean;
+  expected_sha256: string;
+  actual_sha256: string | null;
+  size_bytes?: number;
+}
+
+export interface EvaluationSummary {
+  model_version: string;
+  policy: Policy;
+  tuning: Tuning;
+  normalisation: string;
+  fusion_formula: string;
+  decision_rules: Record<Decision, string>;
+  splits: SplitsInfo;
+  metrics: { validation: EvaluationBlock; test: EvaluationBlock };
+  calibration: CalibrationInfo;
+  curves: Curves;
+  model_selection: ModelMetadata["model_selection"];
+  components: ModelMetadata["components"];
+  methodology: string[];
+}
+
+export interface ExploreRequest {
+  weight: number;
+  review_threshold: number;
+  high_risk_threshold: number;
+  lr_threshold: number;
+  if_flag_rate: number;
+  if_review_percentile?: number | null;
+}
+
+export interface ExploreResponse {
+  split: "validation";
+  model_version: string;
+  rows: number;
+  fraud_rows: number;
+  policy: Policy;
+  active_policy: Policy;
+  metrics: EvaluationBlock;
+  curves: { pr: Record<"logistic_regression" | "isolation_forest" | "hybrid", CurvePointPR[]>; hybrid_threshold_sweep: SweepPoint[] };
+  note: string;
 }
 
 export interface TrainingJob {
@@ -408,10 +605,10 @@ export interface TrainingJob {
   finished_at: string | null;
   duration_s: number | null;
   candidate_model_type: string | null;
-  candidate_metrics: { validation: Partial<ClassMetrics>; test: Partial<ClassMetrics>; cv: CvResult | null } | null;
+  candidate_metrics: { validation: HeadlineBlock; test: HeadlineBlock; cv: LrCvResult | null; policy: Policy } | null;
   comparison: Record<string, unknown> | null;
   active_version_before: string | null;
-  decision: "promoted" | "rejected" | null;
+  decision: "promoted" | "registered" | "rejected" | null;
   reason: string | null;
   new_version: string | null;
   mlflow_run_id: string | null;
@@ -420,15 +617,27 @@ export interface TrainingJob {
 }
 
 export interface TrainingConfigInput {
-  candidates?: string[];
-  feature_set?: "full" | "pre_final_year";
-  engineered_features?: boolean;
-  cv_folds?: number;
-  selection_metric?: "roc_auc" | "f1" | "accuracy" | "neg_log_loss";
-  calibration?: "none" | "sigmoid" | "isotonic";
-  threshold_strategy?: "f1" | "fixed";
+  drop_duplicates?: boolean;
   sample_rows?: number | null;
-  min_validation_roc_auc?: number;
+  time_encoding?: "cyclical_hour" | "raw" | "none";
+  amount_transform?: "log1p" | "raw";
+  lr_imbalance?: "class_weight" | "undersample" | "none";
+  lr_undersample_ratio?: number;
+  lr_c_grid?: number[];
+  lr_calibration?: "prior_correction" | "none";
+  cv_folds?: number;
+  if_n_estimators?: number;
+  if_max_samples?: number;
+  if_reference?: "all_train" | "legitimate_train";
+  if_flag_rate?: number;
+  fusion_weight?: number | null;
+  high_risk_strategy?: "f1" | "precision_target";
+  high_risk_precision_target?: number;
+  review_recall_target?: number;
+  max_review_rate?: number;
+  if_review_percentile?: number | null;
+  min_validation_average_precision?: number;
+  auto_promote?: boolean;
 }
 
 export interface ValidationCheck {
@@ -475,6 +684,8 @@ export interface NumericColumnStats {
   max: number | null;
   skewness: number | null;
   kurtosis: number | null;
+  mean_legitimate?: number | null;
+  mean_fraud?: number | null;
   histogram: { counts: number[]; edges: number[] };
 }
 
@@ -497,7 +708,9 @@ export interface LabSplitInfo {
   source: string;
   seed: number;
   train_rows_used: number;
+  train_fraud_rows: number | null;
   validation_rows_used: number;
+  validation_fraud_rows: number | null;
   test_split: string;
   note: string;
 }

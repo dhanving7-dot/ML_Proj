@@ -48,3 +48,7 @@ export const severityTone = (s: string): Tone => (s === "critical" ? "critical" 
 
 export const jobTone = (s: string): Tone =>
   s === "succeeded" ? "good" : s === "rejected" ? "warning" : s === "failed" ? "critical" : "info";
+
+export const modelStatusTone = (s: string): Tone => (s === "active" ? "good" : s === "candidate" ? "info" : "neutral");
+
+export const decisionTone = (d: string): Tone => (d === "HIGH_RISK" ? "critical" : d === "REVIEW" ? "warning" : "info");

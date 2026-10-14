@@ -9,8 +9,8 @@ import { HealthBadge } from "../layout/HealthBadge";
 import { Button } from "../ui/Button";
 import { ParticleField } from "./ParticleField";
 
-const TITLE = "PlacementPredict";
-const SUB = "Will a student be placed? An end-to-end machine-learning system that shows its work.";
+const TITLE = "FraudGuard";
+const SUB = "Is this card transaction fraud? A hybrid detection system that shows its work.";
 
 export function Hero({ dashboard, datasetRows }: { dashboard?: Dashboard; datasetRows?: number }) {
   const root = useRef<HTMLElement>(null);
@@ -40,10 +40,10 @@ export function Hero({ dashboard, datasetRows }: { dashboard?: Dashboard; datase
 
   const m = dashboard?.model;
   const stats = [
-    { label: "Active model", value: m ? `${m.version} · ${m.label}` : "—" },
-    { label: "Held-out ROC-AUC", value: m ? `${num(m.test_metrics.roc_auc, 3)} on ${int(m.test_support)} students` : "—" },
-    { label: "Training records", value: datasetRows ? int(datasetRows) : "—" },
-    { label: "Predictions served", value: dashboard ? int(dashboard.predictions.total) : "—" },
+    { label: "Active model", value: m ? `${m.version} · hybrid (w = ${num(m.policy.fusion_weight_lr, 2)})` : "—" },
+    { label: "Held-out PR-AUC", value: m ? `${num(m.test_metrics.hybrid_high_risk.average_precision, 3)} on ${int(m.test_support)} transactions` : "—" },
+    { label: "Dataset rows", value: datasetRows ? int(datasetRows) : "—" },
+    { label: "Transactions scored", value: dashboard ? int(dashboard.predictions.total) : "—" },
   ];
 
   return (
@@ -68,10 +68,10 @@ export function Hero({ dashboard, datasetRows }: { dashboard?: Dashboard; datase
           <HealthBadge detailed />
         </div>
         <h1 id="hero-title" aria-label={TITLE} className="font-display text-[clamp(3rem,11vw,9.5rem)] font-semibold leading-[0.9] tracking-[-0.045em]">
-          {["Placement", "Predict"].map((word, w) => (
+          {["Fraud", "Guard"].map((word, w) => (
             <span key={word} className="inline-block whitespace-nowrap">
               {word.split("").map((c, j) => {
-                const i = w === 0 ? j : 9 + j;
+                const i = w === 0 ? j : 5 + j;
                 return (
                   <span key={i} aria-hidden="true" className="inline-block overflow-hidden pb-[0.06em] align-bottom">
                     {/* Each glyph shows its slice of one continuous gradient, so the word reads as a single sweep. */}
@@ -102,13 +102,13 @@ export function Hero({ dashboard, datasetRows }: { dashboard?: Dashboard; datase
           ))}
         </p>
         <p data-hero="copy" className="mt-6 max-w-2xl text-base leading-relaxed text-ink-2 sm:text-lg">
-          A supervised classifier estimates the probability that a student is placed from academic record, assessments and experience. Every step,
-          from data validation to drift monitoring, runs for real and is shown in the open.
+          A class-weighted Logistic Regression and an unsupervised Isolation Forest score 284,807 real, anonymised European card transactions. A
+          validated fusion turns both into LOW_RISK, REVIEW or HIGH_RISK, and every step from data validation to drift monitoring runs for real.
         </p>
         <div data-hero="cta" className="mt-10 flex flex-wrap items-center gap-3">
           <Magnetic>
-            <Button to="/predict" size="lg" icon={<ArrowRight className="size-4 transition-transform duration-300 group-hover:translate-x-0.5" aria-hidden="true" />}>
-              Predict a placement
+            <Button to="/analyze" size="lg" icon={<ArrowRight className="size-4 transition-transform duration-300 group-hover:translate-x-0.5" aria-hidden="true" />}>
+              Analyze a transaction
             </Button>
           </Magnetic>
           <Magnetic>
@@ -133,7 +133,7 @@ export function Hero({ dashboard, datasetRows }: { dashboard?: Dashboard; datase
         href="#story"
         data-hero="scroll"
         className="absolute bottom-6 left-1/2 hidden -translate-x-1/2 flex-col items-center gap-2 text-[10px] uppercase tracking-[0.25em] text-ink-3 hover:text-ink sm:flex"
-        aria-label="Scroll to how a prediction is made"
+        aria-label="Scroll to how a transaction is assessed"
       >
         <span className="relative h-9 w-5 rounded-full border border-line-strong">
           <span className="absolute left-1/2 top-1.5 h-2 w-0.5 -translate-x-1/2 rounded-full bg-ink-2 animate-scroll-dot" />

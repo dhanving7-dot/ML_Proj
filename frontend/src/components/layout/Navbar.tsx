@@ -6,19 +6,20 @@ import { cn } from "../../lib/format";
 import { HealthBadge } from "./HealthBadge";
 
 export const NAV = [
-  { to: "/", label: "Home" },
-  { to: "/dashboard", label: "Dashboard" },
-  { to: "/predict", label: "Predict" },
-  { to: "/lab", label: "ML Lab" },
-  { to: "/lifecycle", label: "Lifecycle" },
-  { to: "/monitoring", label: "Monitoring" },
+  { to: "/overview", label: "Overview" },
+  { to: "/analyze", label: "Analyze" },
+  { to: "/transactions", label: "Transactions" },
+  { to: "/evaluation", label: "Evaluation" },
   { to: "/models", label: "Models" },
+  { to: "/monitoring", label: "Monitoring" },
+  { to: "/lifecycle", label: "Lifecycle" },
   { to: "/data", label: "Data" },
+  { to: "/lab", label: "ML Lab" },
 ] as const;
 
 function Logo() {
   return (
-    <Link to="/" className="flex items-center gap-2.5 rounded-lg" aria-label="PlacementPredict home">
+    <Link to="/" className="flex items-center gap-2.5 rounded-lg" aria-label="FraudGuard home">
       <svg viewBox="0 0 32 32" className="size-8" aria-hidden="true">
         <defs>
           <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
@@ -27,11 +28,11 @@ function Logo() {
           </linearGradient>
         </defs>
         <rect width="32" height="32" rx="9" fill="#0e1120" stroke="rgba(255,255,255,0.1)" />
-        <path d="M8 22 L14 14 L18 18 L24 9" fill="none" stroke="url(#lg)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
-        <circle cx="24" cy="9" r="2.4" fill="#22d3ee" />
+        <path d="M16 6.5 L24 9.5 V15.5 C24 20.5 20.6 24.2 16 25.8 C11.4 24.2 8 20.5 8 15.5 V9.5 Z" fill="none" stroke="url(#lg)" strokeWidth="2.4" strokeLinejoin="round" />
+        <path d="M12.5 16 L15 18.5 L19.8 13.5" fill="none" stroke="#22d3ee" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
       <span className="font-display text-[17px] font-semibold tracking-tight text-ink">
-        Placement<span className="text-gradient">Predict</span>
+        Fraud<span className="text-gradient">Guard</span>
       </span>
     </Link>
   );
@@ -64,10 +65,10 @@ export function Navbar() {
       <nav aria-label="Primary" className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6">
         <Logo />
         <LayoutGroup id="nav">
-          <ul className="hidden items-center gap-0.5 xl:flex">
+          <ul className="hidden items-center gap-0 2xl:flex">
             {NAV.map((n) => (
               <li key={n.to}>
-                <NavLink to={n.to} end={n.to === "/"} className={({ isActive }) => cn("relative block rounded-full px-3.5 py-2 text-[13.5px] font-medium transition-colors duration-300", isActive ? "text-ink" : "text-ink-3 hover:text-ink")}>
+                <NavLink to={n.to} className={({ isActive }) => cn("relative block rounded-full px-3 py-2 text-[13.5px] font-medium transition-colors duration-300", isActive ? "text-ink" : "text-ink-3 hover:text-ink")}>
                   {({ isActive }) => (
                     <>
                       {isActive && (
@@ -85,7 +86,7 @@ export function Navbar() {
           <HealthBadge className="hidden sm:inline-flex" />
           <button
             type="button"
-            className="grid size-10 place-items-center rounded-full border border-line text-ink-2 hover:text-ink xl:hidden"
+            className="grid size-10 place-items-center rounded-full border border-line text-ink-2 hover:text-ink 2xl:hidden"
             aria-label={open ? "Close menu" : "Open menu"}
             aria-expanded={open}
             aria-controls="mobile-nav"
@@ -103,14 +104,14 @@ export function Navbar() {
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-            className="overflow-hidden border-t border-line xl:hidden"
+            className="overflow-hidden border-t border-line 2xl:hidden"
           >
-            <ul className="mx-auto grid max-w-7xl gap-1 px-4 py-4 sm:grid-cols-2 sm:px-6">
+            <ul className="mx-auto grid max-w-7xl gap-1 px-4 py-4 sm:grid-cols-3 sm:px-6">
               {NAV.map((n, i) => (
                 <motion.li key={n.to} initial={{ opacity: 0, x: -12 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.03 * i }}>
                   <NavLink
                     to={n.to}
-                    end={n.to === "/"}
+                   
                     className={({ isActive }) => cn("block rounded-xl px-4 py-3 text-base font-medium", isActive ? "bg-white/[0.06] text-ink" : "text-ink-2 hover:bg-white/[0.04] hover:text-ink")}
                   >
                     {n.label}

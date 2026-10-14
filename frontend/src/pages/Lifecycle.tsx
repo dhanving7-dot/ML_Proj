@@ -110,13 +110,13 @@ function PredictionPath({ id, loaded }: { id: string | null; loaded: boolean }) 
   const t = q.data;
   const steps = t
     ? [
-        { icon: MonitorSmartphone, title: "Frontend request", detail: `${t.source} request with ${Object.keys(t.inputs).length} fields sent to POST /api/predict`, ms: null },
-        { icon: ShieldCheck, title: "FastAPI validation", detail: "Pydantic model generated from the feature contract: types, ranges, enums, no extra fields", ms: null },
-        { icon: Layers, title: "Preprocessing", detail: `Engineered SGPA features, imputation (${t.imputed_fields.length ? t.imputed_fields.join(", ") : "nothing missing"}), scaling, encoding → ${t.feature_vector.length} values`, ms: t.timings.preprocessing_ms },
-        { icon: BrainCircuit, title: "Model inference", detail: `Model ${t.model_version}: P(placed) = ${num(t.probability, 4)} vs threshold ${num(t.threshold, 2)} → ${t.label}`, ms: t.timings.inference_ms },
+        { icon: MonitorSmartphone, title: "Frontend request", detail: `${t.source} request with ${Object.keys(t.inputs).length} feature values sent to POST /api/predict`, ms: null },
+        { icon: ShieldCheck, title: "FastAPI validation", detail: "Pydantic model generated from the feature contract: finite numbers, non-negative Time and Amount, no extra fields", ms: null },
+        { icon: Layers, title: "Preprocessing", detail: `Hour-of-cycle sine/cosine from Time, log(1 + Amount), standardisation with training statistics → ${t.feature_vector.length} values`, ms: t.timings.preprocessing_ms },
+        { icon: BrainCircuit, title: "Scoring & decision", detail: `Model ${t.model_version}: LR ${num(t.lr_probability, 4)}, anomaly percentile ${num(t.anomaly_percentile, 3)}, hybrid ${num(t.hybrid_score, 4)} → ${t.decision}`, ms: t.timings.inference_ms },
         { icon: Network, title: "Response", detail: `Request ID ${t.request_id.slice(0, 12)}… returned at ${dateTime(t.created_at)}`, ms: t.timings.total_ms },
-        { icon: Database, title: "Database persistence", detail: "Inputs, feature vector, probability and timings written to the predictions table", ms: t.timings.persistence_ms },
-        { icon: Radar, title: "Monitoring", detail: `Latency logged; inputs join the PSI/KL drift window for ${t.model_version}${t.actual_outcome != null ? "; ground truth recorded" : ""}`, ms: null },
+        { icon: Database, title: "Database persistence", detail: "Inputs, feature vector, all three scores, decision, policy and timings written to the predictions table", ms: t.timings.persistence_ms },
+        { icon: Radar, title: "Monitoring", detail: `Latency logged; inputs join the PSI/KL drift window for ${t.model_version}${t.actual_outcome != null ? "; confirmed outcome recorded" : ""}`, ms: null },
       ]
     : [];
   return (
@@ -165,21 +165,21 @@ function Paradigms() {
       title: "Supervised learning",
       status: "Implemented",
       tone: "good" as const,
-      body: "Learns a mapping from inputs to a known label. Placement prediction is binary classification (PlacementStatus); the salary experiments in M2/M3 are regression on Salary Package.",
+      body: "Learns a mapping from inputs to a known label. Model A, Logistic Regression, is a binary classifier of Class (fraud vs legitimate); the M2/M3 regression experiments predict log(1 + Amount).",
     },
     {
       icon: Sparkles,
       title: "Unsupervised learning",
-      status: "Implemented in the lab",
+      status: "Implemented (Model B + lab)",
       tone: "good" as const,
-      body: "Finds structure without labels: K-means, hierarchical clustering, DBSCAN, PCA, t-SNE/UMAP and Isolation Forest (M4). Used for exploration, not to make placement decisions.",
+      body: "Finds structure without labels: K-means, hierarchical clustering, DBSCAN, PCA, t-SNE/UMAP and Isolation Forest (M4). Model B, the production Isolation Forest, is fitted without labels and its anomaly score feeds the hybrid risk score.",
     },
     {
       icon: Bot,
       title: "Reinforcement learning",
       status: "Conceptual only",
       tone: "neutral" as const,
-      body: "An agent learns a policy by acting in an environment and receiving rewards (e.g. which practice activity to recommend next). There is no sequential decision loop or reward signal in this dataset, so RL is not implemented.",
+      body: "An agent learns a policy by acting in an environment and receiving rewards (e.g. adapting review thresholds from investigator feedback). There is no sequential decision loop or reward signal in this dataset, so RL is not implemented.",
     },
   ];
   const beyond = [
@@ -265,7 +265,7 @@ function Tooling({ t, labRuns }: { t: Lifecycle["tooling"]; labRuns: number }) {
           </div>
           <ul className="mt-4 space-y-1.5">
             {check(t.dvc.repo_initialised, "Repository initialised (.dvc/)")}
-            {check(t.dvc.dataset_tracked, "Dataset tracked (data/raw/placement_50k.csv.dvc)")}
+            {check(t.dvc.dataset_tracked, "Dataset tracked (data/raw/creditcard.csv.dvc)")}
             {check(t.dvc.pipeline_defined, "Pipeline defined (dvc.yaml: validate → train)")}
             {check(t.dvc.lock_file, "Pipeline reproduced at least once (dvc.lock)")}
           </ul>

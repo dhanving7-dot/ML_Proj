@@ -7,6 +7,8 @@ export const http = axios.create({
   baseURL: API_BASE,
   timeout: 30_000,
   headers: { "Content-Type": "application/json" },
+  // Repeat array params (?decision=REVIEW&decision=HIGH_RISK) the way FastAPI expects.
+  paramsSerializer: { indexes: null },
 });
 
 export interface FieldError {
@@ -42,7 +44,7 @@ export function toApiError(err: unknown): ApiError {
     return new ApiError("The server took too long to respond. Please try again.", { kind: "timeout" });
   }
   if (!ax?.response) {
-    return new ApiError("Cannot reach the PlacementPredict API. Is the backend running on port 8000?", { kind: "network" });
+    return new ApiError("Cannot reach the FraudGuard API. Is the backend running on port 8000?", { kind: "network" });
   }
   const { status, data } = ax.response;
   const detail = data?.detail;

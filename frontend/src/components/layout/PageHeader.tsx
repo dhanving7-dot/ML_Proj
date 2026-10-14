@@ -11,7 +11,7 @@ export function PageHeader({ crumb, title, description, actions }: { crumb: stri
         <ol className="flex items-center gap-2">
           <li>
             <Link to="/" className="hover:text-ink">
-              PlacementPredict
+              FraudGuard
             </Link>
           </li>
           <li aria-hidden="true">/</li>
